@@ -194,6 +194,10 @@ This checks whether `~/.claude/settings.json` still points at the right script a
 
 **OpenRouter balance line isn't showing** — check that `OPENROUTER_API_KEY` is exported in the environment Claude Code runs in (not just your interactive shell — it needs to be set wherever the statusline script actually executes), and that `$ANTHROPIC_BASE_URL` contains `openrouter.ai`. You can sanity-check the API key works directly: `curl -s https://openrouter.ai/api/v1/credits -H "Authorization: Bearer $OPENROUTER_API_KEY"` should return your balance as JSON.
 
+## Thanks
+
+super-status's `Context Efficiency Grade` and `Efficiency grade` scores were inspired by the custom scoring concept in [token-optimizer](https://github.com/alexgreensh/token-optimizer). The exact formulas here are our own heuristics (see §4 of `plan.md`), not a port of token-optimizer's internal logic, but the idea of grading a session's context/tool-call efficiency came from that project. Thanks a lot to [@alexgreensh](https://github.com/alexgreensh) for the inspiration.
+
 ## A living project
 
 super-status has already gone through one structural refactor — from a dense, symbol-heavy 3-line layout to the labeled, multi-line format above — and will keep iterating as fields get tuned, added, or adjusted based on real day-to-day use.
