@@ -74,7 +74,7 @@ super-status prints labeled lines rather than a dense symbol-only layout, so eve
 **Mode 1 — Anthropic subscription (6 lines):**
 ```
 Model: Claude Sonnet 4.6 | Repo: repo | Branch: master | Lines Changes: +45 -12
-Sessions: 5h: 23% (Reset: 17:46) [####----------------] | 7d: 41% [########------------] (Reset: 30/06/2026 05:06)
+Sessions: 5h: 23% [####----------------] (Reset: 17:46) | 7d: 41% [########------------] (Reset: 30/06/2026 05:06)
 Context: 42% [########------------] (46k/200k) | Cost: $1.23
 Lines of code in project: ~14.2k | Total Session Time: 1h30m | Total thinking time: 1m38s
 Context Efficiency Grade (A–F): C(71) | Efficiency grade (A-F): A(100) | Tool Calls: 3
@@ -116,7 +116,7 @@ Time: 30/06/2026 18:52 | Claude Version: v2.1.90
 ### Line 2 — Sessions / Balance (backend-dependent — see Backend modes below)
 | Field | Example | Meaning |
 |---|---|---|
-| `Sessions: 5h:` | `12% (Reset: 14:00) [##------------------]` | % of your rolling 5-hour Anthropic plan limit used, when it resets, and a usage bar |
+| `Sessions: 5h:` | `12% [##------------------] (Reset: 14:00)` | % of your rolling 5-hour Anthropic plan limit used, a usage bar, and when it resets |
 | `Sessions: 7d:` | `12% [##------------------] (Reset: 14/07/2026 15:00)` | % of your rolling 7-day Anthropic plan limit used, a usage bar, and when it resets |
 | `Balance:` | `$16.58 / $20.00 [################----] 17% used` | (OpenRouter mode only) live remaining/total credit balance from OpenRouter's `/api/v1/credits` endpoint |
 

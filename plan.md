@@ -78,7 +78,7 @@ Claude Code's stdin JSON doesn't itself declare which backend is in use (Anthrop
 **Mode 1 — Anthropic subscription (6 lines):**
 ```
 Model: Claude Sonnet 4.6 | Repo: repo | Branch: master | Lines Changes: +45 -12
-Sessions: 5h: 23% (Reset: 17:46) [####----------------] | 7d: 41% [########------------] (Reset: 30/06/2026 05:06)
+Sessions: 5h: 23% [####----------------] (Reset: 17:46) | 7d: 41% [########------------] (Reset: 30/06/2026 05:06)
 Context: 42% [########------------] (46k/200k) | Cost: $1.23
 Lines of code in project: ~14.2k | Total Session Time: 1h30m | Total thinking time: 1m38s
 Context Efficiency Grade (A–F): C(71) | Efficiency grade (A-F): A(100) | Tool Calls: 3

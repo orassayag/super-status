@@ -287,9 +287,9 @@ if [ "$IS_SUBSCRIPTION" -eq 1 ]; then
     five_reset_str=$(format_time_epoch "$five_reset")
     seven_reset_str=$(format_datetime_epoch "$seven_reset")
 
-    line2="${WHITE}Sessions:${RESET} ${YELLOW}5h:${RESET} ${five_color}${five_pct}%${RESET}"
+    line2="${WHITE}Sessions:${RESET} ${YELLOW}5h:${RESET} ${five_color}${five_pct}%${RESET} ${BLUE}[${five_bar}]${RESET}"
     [ -n "$five_reset_str" ] && line2="${line2} ${GREY}(Reset: ${five_reset_str})${RESET}"
-    line2="${line2} ${BLUE}[${five_bar}]${RESET} | ${YELLOW}7d:${RESET} ${seven_color}${seven_pct}%${RESET} ${BLUE}[${seven_bar}]${RESET}"
+    line2="${line2} | ${YELLOW}7d:${RESET} ${seven_color}${seven_pct}%${RESET} ${BLUE}[${seven_bar}]${RESET}"
     [ -n "$seven_reset_str" ] && line2="${line2} ${GREY}(Reset: ${seven_reset_str})${RESET}"
 
 elif [ "$IS_OPENROUTER" -eq 1 ] && [ -n "$OPENROUTER_API_KEY" ] && command -v curl >/dev/null 2>&1; then
