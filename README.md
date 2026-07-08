@@ -45,12 +45,15 @@ Add this to `~/.claude/settings.json` (create the file if it doesn't exist):
 {
   "statusLine": {
     "type": "command",
-    "command": "/bin/bash /home/YOUR_USER/.claude/super-status/statusline.sh"
+    "command": "/bin/bash /home/YOUR_USER/.claude/super-status/statusline.sh",
+    "refreshInterval": 2
   }
 }
 ```
 
 Replace `/home/YOUR_USER` with your actual home directory. This is the **user-level** settings file, so it applies to every project automatically — no per-project setup needed.
+
+`refreshInterval` (seconds) is optional but recommended — see **Live updates** below for why.
 
 **5. Open a new Claude Code session**
 
@@ -74,10 +77,10 @@ super-status prints labeled lines rather than a dense symbol-only layout, so eve
 **Mode 1 — Anthropic subscription (6 lines):**
 ```
 Model: Claude Sonnet 4.6 | Repo: repo | Branch: master | Lines Changes: +45 -12
-Sessions: 5h: 23% [####----------------] (Reset: 17:46) | 7d: 41% [########------------] (Reset: 30/06/2026 05:06)
+Sessions: 5h: 23% [####----------------] (Reset: 17:46) | 5d: 41% [########------------] (Reset: 30/06/2026 05:06)
 Context: 42% [########------------] (46k/200k) | Cost: $1.23
 Lines of code in project: ~14.2k | Total Session Time: 1h30m | Total thinking time: 1m38s
-Context Efficiency Grade (A–F): C(71) | Efficiency grade (A-F): A(100) | Tool Calls: 3
+Context Efficiency Grade (A–F): C(71) | Efficiency Grade (A–F): A(100) | Tool Calls: 3
 Time: 30/06/2026 18:52 | Claude Version: v2.1.90
 ```
 
@@ -86,7 +89,7 @@ Time: 30/06/2026 18:52 | Claude Version: v2.1.90
 Model: Claude Sonnet 4.6 | Repo: repo | Branch: master | Lines Changes: +45 -12
 Context: 42% [########------------] (46k/200k) | Cost: $3.42
 Lines of code in project: ~14.2k | Total Session Time: 1h30m | Total thinking time: 1m38s
-Context Efficiency Grade (A–F): C(71) | Efficiency grade (A-F): A(100) | Tool Calls: 3
+Context Efficiency Grade (A–F): C(71) | Efficiency Grade (A–F): A(100) | Tool Calls: 3
 Time: 30/06/2026 18:52 | Claude Version: v2.1.90
 ```
 
@@ -96,11 +99,20 @@ Model: anthropic/claude-sonnet-4.6 | Repo: repo | Branch: master | Lines Changes
 Balance: $16.58 / $20.00 [################----] 17% used
 Context: 42% [########------------] (46k/200k) | Cost: $3.42
 Lines of code in project: ~14.2k | Total Session Time: 1h30m | Total thinking time: 1m38s
-Context Efficiency Grade (A–F): C(71) | Efficiency grade (A-F): A(100) | Tool Calls: 3
+Context Efficiency Grade (A–F): C(71) | Efficiency Grade (A–F): A(100) | Tool Calls: 3
 Time: 30/06/2026 18:52 | Claude Version: v2.1.90
 ```
 
 **Dates:** every full date super-status prints (the 7-day reset, and the `Time:` field) uses `dd/MM/yyyy`. The 5-hour reset only ever shows `HH:MM`, since that reset always lands within the current day.
+
+## Live updates
+
+super-status is a stateless script — it only knows what Claude Code hands it on stdin *at the moment it's invoked*. That has two visible effects that are Claude Code behavior, not bugs in this script:
+
+- **The statusline disappears during permission prompts, autocomplete, and the help menu.** This is documented, intentional Claude Code behavior — it hides in those moments and reappears once you respond.
+- **`Total Session Time` and `Total thinking time` can appear frozen.** By default, Claude Code only re-runs your statusline command after a new assistant message, after `/compact`, when the permission mode changes, or when vim mode toggles — there's no built-in per-second tick. So during a long thinking pause or while waiting on a tool call, both fields hold their last value until the next one of those events fires.
+
+To make both time fields update continuously instead of only on those events, add `"refreshInterval": 2` (or any value in seconds, minimum `1`) to the `statusLine` block in `~/.claude/settings.json`, as shown in the install step above. This re-runs the script on a fixed timer in addition to the normal event triggers, so the clock keeps ticking even while Claude is idle or thinking.
 
 ## What each field means
 
@@ -117,10 +129,10 @@ Time: 30/06/2026 18:52 | Claude Version: v2.1.90
 | Field | Example | Meaning |
 |---|---|---|
 | `Sessions: 5h:` | `12% [##------------------] (Reset: 14:00)` | % of your rolling 5-hour Anthropic plan limit used, a usage bar, and when it resets |
-| `Sessions: 7d:` | `12% [##------------------] (Reset: 14/07/2026 15:00)` | % of your rolling 7-day Anthropic plan limit used, a usage bar, and when it resets |
+| `Sessions: Nd:` | `5d: 12% [##------------------] (Reset: 14/07/2026 15:00)` | % of your rolling weekly Anthropic plan limit used, a usage bar, and when it resets. `N` is computed live — the actual number of days from now until the reset (rounded up) — not hardcoded to 7, since this window is rolling and doesn't always land exactly a week out |
 | `Balance:` | `$16.58 / $20.00 [################----] 17% used` | (OpenRouter mode only) live remaining/total credit balance from OpenRouter's `/api/v1/credits` endpoint |
 
-Colors: green = healthy, orange = getting close, red = at/near the limit (7-day uses tighter thresholds than 5-hour, since a blown weekly quota is more disruptive than a 5-hour one that resets soon).
+Colors: green = healthy, orange = getting close, red = at/near the limit (the weekly window uses tighter thresholds than 5-hour, since a blown weekly quota is more disruptive than a 5-hour one that resets soon).
 
 ### Line 3 — Context & cost
 | Field | Example | Meaning |
@@ -139,7 +151,7 @@ Colors: green = healthy, orange = getting close, red = at/near the limit (7-day 
 | Field | Example | Meaning |
 |---|---|---|
 | `Context Efficiency Grade (A–F):` | `A(99)` | Context-efficiency grade, based on how much of your context came from cache reuse vs. fresh tokens. Higher = cheaper/more efficient session. |
-| `Efficiency grade (A-F):` | `A(100)` | Efficiency grade, based on how much code changed per tool call. Higher = more productive tool usage. |
+| `Efficiency Grade (A–F):` | `A(100)` | Efficiency grade, based on how much code changed per tool call. Higher = more productive tool usage. |
 | `Tool Calls:` | `3` | Number of tool calls made so far this session |
 
 > **Note:** the two efficiency grades are *custom heuristics* built for this project, not official Claude Code metrics. They're a useful relative signal, not an absolute judgment of session quality.
@@ -155,7 +167,7 @@ Colors: green = healthy, orange = getting close, red = at/near the limit (7-day 
 super-status detects which backend you're running Claude Code against and adjusts the Sessions/Balance line accordingly. Detection is automatic — no configuration needed beyond your normal Claude Code setup.
 
 ### Mode 1 — Anthropic subscription (unchanged)
-Detected when Claude Code's `rate_limits` data is present (i.e. you're authenticated against an Anthropic Max/Pro plan). Shows the `Sessions:` line with 5h/7d usage as described above.
+Detected when Claude Code's `rate_limits` data is present (i.e. you're authenticated against an Anthropic Max/Pro plan). Shows the `Sessions:` line with 5h/Nd usage as described above.
 
 ### Mode 2 — Anthropic API key or other pay-as-you-go backend (e.g. z.ai)
 Detected when `rate_limits` is absent. The `Sessions:` line is omitted entirely rather than showing empty or misleading data, because no backend in this mode currently exposes a programmatic balance check (confirmed against Anthropic's own API — there's no public endpoint for pay-as-you-go credit balance — and against z.ai's docs, which only offer a dashboard view). `Cost:` on line 3 remains the only usage signal available in this mode.
@@ -192,11 +204,13 @@ This checks whether `~/.claude/settings.json` still points at the right script a
 
 **Nothing shows at all and hooks are disabled** — when Claude Code runs with hooks disabled (e.g. via the `--dangerously-skip-permissions` flag or the "Disable hooks" prompt in session), the statusLine is silenced along with all hooks. Re-enable hooks to restore the statusline.
 
+**Statusline disappears during permission prompts, or Session Time / thinking time look stuck** — see [Live updates](#live-updates) above; both are expected Claude Code behavior, and the second is fixable with `refreshInterval`.
+
 **OpenRouter balance line isn't showing** — check that `OPENROUTER_API_KEY` is exported in the environment Claude Code runs in (not just your interactive shell — it needs to be set wherever the statusline script actually executes), and that `$ANTHROPIC_BASE_URL` contains `openrouter.ai`. You can sanity-check the API key works directly: `curl -s https://openrouter.ai/api/v1/credits -H "Authorization: Bearer $OPENROUTER_API_KEY"` should return your balance as JSON.
 
 ## Thanks
 
-super-status's `Context Efficiency Grade` and `Efficiency grade` scores were inspired by the custom scoring concept in [token-optimizer](https://github.com/alexgreensh/token-optimizer). The exact formulas here are our own heuristics (see §4 of `plan.md`), not a port of token-optimizer's internal logic, but the idea of grading a session's context/tool-call efficiency came from that project. Thanks a lot to [@alexgreensh](https://github.com/alexgreensh) for the inspiration.
+super-status's `Context Efficiency Grade` and `Efficiency Grade` scores were inspired by the custom scoring concept in [token-optimizer](https://github.com/alexgreensh/token-optimizer). The exact formulas here are our own heuristics (see §4 of `plan.md`), not a port of token-optimizer's internal logic, but the idea of grading a session's context/tool-call efficiency came from that project. Thanks a lot to [@alexgreensh](https://github.com/alexgreensh) for the inspiration.
 
 ## A living project
 

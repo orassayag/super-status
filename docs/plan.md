@@ -33,7 +33,7 @@ The original plan (Revision 1) packed everything into 3 dense, symbol-only lines
 | # | Field | Label | Data origin |
 |---|---|---|---|
 | 6 | 5-hour usage % + reset + bar | `Sessions: 5h:` | `rate_limits.five_hour` — reset shown as `HH:MM` (same-day reset) |
-| 7 | 7-day usage % + reset + bar | `Sessions: 7d:` | `rate_limits.seven_day` — reset shown as `dd/MM/yyyy HH:MM` |
+| 7 | Weekly usage % + reset + bar | `Sessions: Nd:` | `rate_limits.seven_day` — reset shown as `dd/MM/yyyy HH:MM`; `N` is computed live as days-remaining-until-reset (ceiling), not hardcoded to 7, since the window is rolling |
 | 8 | OpenRouter balance bar | `Balance:` | `GET https://openrouter.ai/api/v1/credits` — see §3a, replaces the Sessions line entirely in OpenRouter mode |
 
 ### Line 3 — Context & cost
@@ -53,7 +53,7 @@ The original plan (Revision 1) packed everything into 3 dense, symbol-only lines
 | # | Field | Label | Data origin |
 |---|---|---|---|
 | 14 | Context quality score | `Context Efficiency Grade (A–F):` | **custom heuristic — see §4** |
-| 15 | Efficiency score | `Efficiency grade (A-F):` | **custom heuristic — see §4** |
+| 15 | Efficiency score | `Efficiency Grade (A–F):` | **custom heuristic — see §4** |
 | 16 | Tool call count | `Tool Calls:` | counted from `transcript_path` JSONL, cached |
 
 ### Line 6 — Timestamp & version
@@ -68,7 +68,7 @@ The original plan (Revision 1) packed everything into 3 dense, symbol-only lines
 
 Claude Code's stdin JSON doesn't itself declare which backend is in use (Anthropic subscription vs. Anthropic API key vs. OpenRouter vs. z.ai/other). Detection is done by the script at render time:
 
-1. **Anthropic subscription** — `rate_limits.five_hour` / `.seven_day` are present in the stdin JSON. Line 2 renders as `Sessions: 5h: ... | 7d: ...`.
+1. **Anthropic subscription** — `rate_limits.five_hour` / `.seven_day` are present in the stdin JSON. Line 2 renders as `Sessions: 5h: ... | Nd: ...`, where `N` is computed live from `resets_at` rather than hardcoded to 7.
 2. **Anthropic API key (pay-as-you-go)** — `rate_limits` absent AND `$ANTHROPIC_BASE_URL` is unset or points at an `anthropic.com` host. Line 2 is **omitted entirely** (no reliable balance source exists — confirmed via Claude Code's own GitHub issue tracker that no public balance endpoint exists for Anthropic API keys). `Cost:` on line 3 is the only usage signal in this mode.
 3. **OpenRouter API key** — `$ANTHROPIC_BASE_URL` contains `openrouter.ai`. Line 2 is **replaced** with `Balance: $X.XX / $Y.YY [bar] Z% used`, fetched from OpenRouter's `GET /api/v1/credits` endpoint (`total_credits - total_usage` = remaining; both figures read live, not hardcoded). Requires an OpenRouter API key available to the script via env var (read only, never logged or embedded in the script). Cached 60s to avoid hammering the API on every render.
 4. **Other backends (e.g. z.ai)** — treated like mode 2: line 2 omitted. z.ai's API has no public balance-check endpoint, only a dashboard.
@@ -78,10 +78,10 @@ Claude Code's stdin JSON doesn't itself declare which backend is in use (Anthrop
 **Mode 1 — Anthropic subscription (6 lines):**
 ```
 Model: Claude Sonnet 4.6 | Repo: repo | Branch: master | Lines Changes: +45 -12
-Sessions: 5h: 23% [####----------------] (Reset: 17:46) | 7d: 41% [########------------] (Reset: 30/06/2026 05:06)
+Sessions: 5h: 23% [####----------------] (Reset: 17:46) | 5d: 41% [########------------] (Reset: 30/06/2026 05:06)
 Context: 42% [########------------] (46k/200k) | Cost: $1.23
 Lines of code in project: ~14.2k | Total Session Time: 1h30m | Total thinking time: 1m38s
-Context Efficiency Grade (A–F): C(71) | Efficiency grade (A-F): A(100) | Tool Calls: 3
+Context Efficiency Grade (A–F): C(71) | Efficiency Grade (A–F): A(100) | Tool Calls: 3
 Time: 30/06/2026 18:52 | Claude Version: v2.1.90
 ```
 
@@ -90,7 +90,7 @@ Time: 30/06/2026 18:52 | Claude Version: v2.1.90
 Model: Claude Sonnet 4.6 | Repo: repo | Branch: master | Lines Changes: +45 -12
 Context: 42% [########------------] (46k/200k) | Cost: $3.42
 Lines of code in project: ~14.2k | Total Session Time: 1h30m | Total thinking time: 1m38s
-Context Efficiency Grade (A–F): C(71) | Efficiency grade (A-F): A(100) | Tool Calls: 3
+Context Efficiency Grade (A–F): C(71) | Efficiency Grade (A–F): A(100) | Tool Calls: 3
 Time: 30/06/2026 18:52 | Claude Version: v2.1.90
 ```
 *(no Sessions/Balance line — omitted cleanly, no dangling separator)*
@@ -101,14 +101,14 @@ Model: anthropic/claude-sonnet-4.6 | Repo: repo | Branch: master | Lines Changes
 Balance: $16.58 / $20.00 [################----] 17% used
 Context: 42% [########------------] (46k/200k) | Cost: $3.42
 Lines of code in project: ~14.2k | Total Session Time: 1h30m | Total thinking time: 1m38s
-Context Efficiency Grade (A–F): C(71) | Efficiency grade (A-F): A(100) | Tool Calls: 3
+Context Efficiency Grade (A–F): C(71) | Efficiency Grade (A–F): A(100) | Tool Calls: 3
 Time: 30/06/2026 18:52 | Claude Version: v2.1.90
 ```
 
 ## 4. Custom score definitions (confirmed, unchanged from Revision 1)
 
 - **Context Efficiency Grade (context quality, A–F + 0–100)**: based on cache-reuse ratio — `cache_read_input_tokens / total_tokens`. Higher reuse = more efficient context = higher grade. Bands: A ≥90, B 75–89, C 60–74, D 40–59, F <40.
-- **Efficiency grade (A–F + 0–100)**: based on productive output per tool call — `(lines_added + lines_removed) / tool_call_count`, scaled and bucketed the same A–F way. Low tool-call counts with no lines changed yet default to a neutral/omitted state rather than a misleading score.
+- **Efficiency Grade (A–F + 0–100)**: based on productive output per tool call — `(lines_added + lines_removed) / tool_call_count`, scaled and bucketed the same A–F way. Low tool-call counts with no lines changed yet default to a neutral/omitted state rather than a misleading score.
 
 ## 5. Caching & performance architecture (unchanged)
 - LOC count: 60s cache per git root in `/tmp/super-status/loc-cache/`
@@ -118,7 +118,7 @@ Time: 30/06/2026 18:52 | Claude Version: v2.1.90
 - All external calls (`git`, `tokei`, `curl`) timeout-bounded so the statusline never hangs the UI
 
 ## 6. Color system (unchanged palette, applied to the new labeled layout)
-Cyan model name, green repo, magenta branch/worktree, blue bar brackets, grey LOC/version/timestamps, red/orange/green thresholds for context % and rate-limit % (tighter thresholds for 7-day than 5-hour), yellow for cost/balance/session-percentages/tool-count, grade-specific color for the two efficiency grades (green A/B, orange C, red D/F). Field **labels** themselves render in white/plain to stay visually distinct from their colored values.
+Cyan model name, green repo, magenta branch/worktree, blue bar brackets, grey LOC/version/timestamps, red/orange/green thresholds for context % and rate-limit % (tighter thresholds for the weekly window than 5-hour), yellow for cost/balance/session-percentages/tool-count, grade-specific color for the two efficiency grades (green A/B, orange C, red D/F). Field **labels** themselves render in white/plain to stay visually distinct from their colored values.
 
 ## 7. Hard safety rules (unchanged)
 - **Never render `null`, `undefined`, or `NaN`.** Every field — label, value, and its separator together — is wrapped in a presence/validity check; if missing or invalid, the whole field is omitted, not replaced with a placeholder.
@@ -162,7 +162,7 @@ Since plugins could in theory ship their own `statusLine`/default config, the pl
 
 ## 13. Date formatting (new — confirmed by owner)
 - Every **full date** rendered anywhere in the statusline uses `dd/MM/yyyy`.
-- The 7-day reset (`Sessions: 7d: ... (Reset: dd/MM/yyyy HH:MM)`) and the bottom-line timestamp (`Time: dd/MM/yyyy HH:MM`) both use this full format.
+- The weekly reset (`Sessions: Nd: ... (Reset: dd/MM/yyyy HH:MM)`) and the bottom-line timestamp (`Time: dd/MM/yyyy HH:MM`) both use this full format.
 - The 5-hour reset (`Sessions: 5h: ... (Reset: HH:MM)`) intentionally omits the date, since that reset always falls within the current day.
 
 ---
@@ -175,3 +175,8 @@ Since plugins could in theory ship their own `statusLine`/default config, the pl
 5. **Date format** (§13) — confirmed: `dd/MM/yyyy` for all full dates; time-only where a reset falls within the current day.
 
 This plan is ready to hand to an implementation agent.
+
+---
+
+## Status: Revision 3 — dynamic weekly label (post-implementation fix)
+The `Sessions:` weekly field was hardcoded as `7d:` under the assumption that the window always resets exactly a week out. Real-world use showed this isn't the case — it's a rolling window (see §3a), so the actual days-remaining can be less than 7. Fixed: the label is now computed live as `Nd:`, where `N` is the ceiling of `(resets_at - now) / 1 day`. All field-table entries, sketches, and prose in §3, §3a, §6, and §13 above reflect this; `7d` no longer appears anywhere in the rendered output.

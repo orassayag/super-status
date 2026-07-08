@@ -263,7 +263,9 @@ fi
 
 # ---------------------------------------------------------------------------
 # Line 2 — mode-dependent:
-#   subscription mode -> Sessions: 5h / 7d usage with reset times
+#   subscription mode -> Sessions: 5h / Nd usage with reset times (Nd = actual
+#                         days remaining until the weekly window resets, computed
+#                         live — not hardcoded to "7d", since it's a rolling window)
 #   OpenRouter mode    -> live Balance bar from /api/v1/credits
 #   other API-key mode -> omitted (no reliable balance source exists)
 # ---------------------------------------------------------------------------
@@ -287,9 +289,23 @@ if [ "$IS_SUBSCRIPTION" -eq 1 ]; then
     five_reset_str=$(format_time_epoch "$five_reset")
     seven_reset_str=$(format_datetime_epoch "$seven_reset")
 
+    # Dynamic day-count label for the weekly window: the reset is a rolling
+    # window, not always a literal 7 days out, so we compute the actual
+    # number of days remaining from "now" to resets_at rather than hardcoding "7d".
+    seven_days_label="7d"
+    seven_reset_int=${seven_reset%.*}
+    if is_num "$seven_reset_int"; then
+        now_epoch=$(date +%s)
+        _diff=$(( seven_reset_int - now_epoch ))
+        [ "$_diff" -lt 0 ] && _diff=0
+        # Ceiling division: partial days round up (e.g. 18h left -> "1d", 4.2 days -> "5d")
+        _days_left=$(( (_diff + 86399) / 86400 ))
+        seven_days_label="${_days_left}d"
+    fi
+
     line2="${WHITE}Sessions:${RESET} ${YELLOW}5h:${RESET} ${five_color}${five_pct}%${RESET} ${BLUE}[${five_bar}]${RESET}"
     [ -n "$five_reset_str" ] && line2="${line2} ${GREY}(Reset: ${five_reset_str})${RESET}"
-    line2="${line2} | ${YELLOW}7d:${RESET} ${seven_color}${seven_pct}%${RESET} ${BLUE}[${seven_bar}]${RESET}"
+    line2="${line2} | ${YELLOW}${seven_days_label}:${RESET} ${seven_color}${seven_pct}%${RESET} ${BLUE}[${seven_bar}]${RESET}"
     [ -n "$seven_reset_str" ] && line2="${line2} ${GREY}(Reset: ${seven_reset_str})${RESET}"
 
 elif [ "$IS_OPENROUTER" -eq 1 ] && [ -n "$OPENROUTER_API_KEY" ] && command -v curl >/dev/null 2>&1; then
@@ -383,12 +399,18 @@ if [ -n "$transcript_path" ] && [ -f "$transcript_path" ]; then
     _cached_mtime=$(cat "$_ts_stamp" 2>/dev/null || echo -1)
 
     if [ "$_src_mtime" != "$_cached_mtime" ]; then
-        _count=$(grep -c '"type":"tool_use"' "$transcript_path" 2>/dev/null || echo 0)
-        echo "${_count:-0}" > "$_ts_file"
+        # grep -c still prints "0" to stdout on zero matches, but exits 1 (its
+        # "no match" signal) — so `grep -c ... || echo 0` would run BOTH and
+        # capture "0\n0" into the variable. Capture once, then validate instead.
+        _count=$(grep -c '"type":"tool_use"' "$transcript_path" 2>/dev/null)
+        is_num "$_count" || _count=0
+        echo "$_count" > "$_ts_file"
         echo "$_src_mtime" > "$_ts_stamp"
     fi
-    tool_count=$(cat "$_ts_file" 2>/dev/null || echo 0)
-    tool_count=$(( ${tool_count:-0} + 0 ))
+    # head -n1 also self-heals any cache file left corrupted by the old bug
+    tool_count=$(head -n1 "$_ts_file" 2>/dev/null)
+    is_num "$tool_count" || tool_count=0
+    tool_count=$(( tool_count + 0 ))
 fi
 
 eff_grade=""; eff_score=""
@@ -407,7 +429,7 @@ fi
 if [ -n "$eff_grade" ]; then
     eff_color=$(grade_color "$eff_grade")
     [ -n "$line5" ] && line5="${line5} | "
-    line5="${line5}${WHITE}Efficiency grade (A-F):${RESET} ${eff_color}${eff_grade}(${eff_score})${RESET}"
+    line5="${line5}${WHITE}Efficiency Grade (A–F):${RESET} ${eff_color}${eff_grade}(${eff_score})${RESET}"
 fi
 if [ -n "$tool_count" ]; then
     [ -n "$line5" ] && line5="${line5} | "
