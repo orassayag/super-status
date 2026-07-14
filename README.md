@@ -13,7 +13,7 @@ brew install jq
 brew install tokei
 ```
 
-`jq` is required. `tokei` is optional — the LOC field just won't show without it. `python3` is also required (used to parse the session transcript for the `Tool Calls:` count and the `Tools Stats:` line) — it ships by default on macOS and most Linux distros.
+`jq` is required. `tokei` is optional — the LOC field just won't show without it. `python3` is also required (used to parse the session transcript for the `Total Tokens:` totals and the `Tool Calls:` breakdown line) — it ships by default on macOS and most Linux distros.
 
 **2. Get the script**
 
@@ -68,31 +68,34 @@ echo '{"model":{"display_name":"Opus"},"workspace":{"current_dir":"/home/you/mya
   | bash ~/.claude/super-status/statusline.sh
 ```
 
-If you see formatted, labeled lines with colors, it's working. (Fields that need a live session — like rate limits, token totals, or `Tools Stats:` — won't show with this minimal mock payload; that's expected, see "What each field means" below.)
+If you see formatted, labeled lines with colors, it's working. (Fields that need a live session — like rate limits, token totals, or `Tool Calls:` — won't show with this minimal mock payload; that's expected, see "What each field means" below.)
 
 ## Output format
 
 super-status prints labeled lines rather than a dense symbol-only layout, so every value is self-explanatory at a glance. The exact number of lines shown depends on the backend mode (see **Backend modes** below), but the labels and their order are always the same.
 
-**Mode 1 — Anthropic subscription (6 lines):**
+**Mode 1 — Anthropic subscription (7 lines):**
 
 ```
 Model: Claude Sonnet 4.6 | Repo: repo | Branch: master | Lines Changes: +45 -12 | Claude Version: v2.1.90
+Subscription: 62% [############--------] (Reset: 14d [14/08/2026])
 Sessions: 5h: 99% [###################-] (Reset: 2h30m [12:40]) | 3d: 44% [########------------] (Reset: 3d14h10m [11/07/2026 15:00])
-Context: 42% [########------------] (46k/200k) | Cost: $1.23 | Tokens: 152.3k in / 45.2k out
+Context: 42% [########------------] (46k/200k) | Cost (est.): $1.23 | Total Tokens: 152.3k in / 45.2k out
 Lines of code in project: ~14.2k | Total Session Time: 1h30m | Total thinking time: 1m38s
-Context Efficiency Grade (A–F): C(71) | Efficiency Grade (A–F): A(100) | Tool Calls: 3
-Tools Stats: npm: 34 | pnpm: 10 | git: 6 | edit: 2 | write: 1 | other: 0
+Cache Vs Tokens: 71% | Efficiency Grade (A–F): A(100)
+Tool Calls (9): Skills: 1 | Code: 3 | Commands: 1 | Read: 3 | MCP Call: 0 | Other: 1
 ```
 
-**Mode 2 — Anthropic API key / other pay-as-you-go (5 lines — Sessions line omitted):**
+The `Subscription:` line needs a one-time setup step — see **Subscription tracking setup** below. Until then it's replaced by a bold red reminder line.
+
+**Mode 2 — Anthropic API key / other pay-as-you-go (5 lines — Sessions and Subscription lines omitted):**
 
 ```
 Model: Claude Sonnet 4.6 | Repo: repo | Branch: master | Lines Changes: +45 -12 | Claude Version: v2.1.90
-Context: 42% [########------------] (46k/200k) | Cost: $3.42 | Tokens: 152.3k in / 45.2k out
+Context: 42% [########------------] (46k/200k) | Cost: $3.42 | Total Tokens: 152.3k in / 45.2k out
 Lines of code in project: ~14.2k | Total Session Time: 1h30m | Total thinking time: 1m38s
-Context Efficiency Grade (A–F): C(71) | Efficiency Grade (A–F): A(100) | Tool Calls: 3
-Tools Stats: read: 12 | edit: 5 | bash: 3 | other: 0
+Cache Vs Tokens: 71% | Efficiency Grade (A–F): A(100)
+Tool Calls (9): Skills: 1 | Code: 3 | Commands: 1 | Read: 3 | MCP Call: 0 | Other: 1
 ```
 
 **Mode 3 — OpenRouter (6 lines — Sessions line replaced with a live Balance line):**
@@ -100,13 +103,13 @@ Tools Stats: read: 12 | edit: 5 | bash: 3 | other: 0
 ```
 Model: anthropic/claude-sonnet-4.6 | Repo: repo | Branch: master | Lines Changes: +45 -12 | Claude Version: v2.1.90
 Balance: $16.58 / $20.00 [################----] 17% used
-Context: 42% [########------------] (46k/200k) | Cost: $3.42 | Tokens: 152.3k in / 45.2k out
+Context: 42% [########------------] (46k/200k) | Cost: $3.42 | Total Tokens: 152.3k in / 45.2k out
 Lines of code in project: ~14.2k | Total Session Time: 1h30m | Total thinking time: 1m38s
-Context Efficiency Grade (A–F): C(71) | Efficiency Grade (A–F): A(100) | Tool Calls: 3
-Tools Stats: npm: 34 | pnpm: 10 | mcp: 7 | git: 6 | edit: 2 | other: 2
+Cache Vs Tokens: 71% | Efficiency Grade (A–F): A(100)
+Tool Calls (12): Skills: 1 | Code: 4 | Commands: 3 | Read: 2 | MCP Call: 2 | Other: 0
 ```
 
-**Colors:** every progress bar (`Sessions: 5h:`, `Sessions: Nd:`, `Context:`, `Balance:`) is colored to match its own usage percentage — green while healthy, orange as it climbs, red once it's at or near the limit — rather than a flat, uninformative color. See the color thresholds under each line's section below.
+**Colors:** every progress bar (`Subscription:`, `Sessions: 5h:`, `Sessions: Nd:`, `Context:`, `Balance:`) is colored to match its own usage percentage — green while healthy, orange as it climbs, red once it's at or near the limit — rather than a flat, uninformative color. See the color thresholds under each line's section below.
 
 **Dates:** the 5-hour reset shows a countdown plus `HH:MM` (e.g. `Reset: 2h30m [12:40]`), since that reset always lands within the current day. The weekly reset shows a countdown plus a full `dd/MM/yyyy HH:MM` timestamp (e.g. `Reset: 3d14h10m [11/07/2026 15:00]`), since it can land on a different day.
 
@@ -116,7 +119,7 @@ super-status is a stateless script — it only knows what Claude Code hands it o
 
 - **The statusline disappears during permission prompts, autocomplete, and the help menu.** This is documented, intentional Claude Code behavior — it hides in those moments and reappears once you respond.
 - **`Total Session Time` and `Total thinking time` can appear frozen.** By default, Claude Code only re-runs your statusline command after a new assistant message, after `/compact`, when the permission mode changes, or when vim mode toggles — there's no built-in per-second tick. So during a long thinking pause or while waiting on a tool call, both fields hold their last value until the next one of those events fires.
-- **Rate-limit data (the `Sessions:` line) and cumulative session token totals (`Tokens:` on the Context line) are both empty until after your first message exchange in a session.** Claude Code only populates `rate_limits` and `context_window.total_input_tokens` / `total_output_tokens` once it's made at least one real API call — there's currently no way to see them before that (this is the single most-requested statusLine feature upstream, [tracked here](https://github.com/anthropics/claude-code/issues/27915)). If you see the `Sessions:` line appear without having typed anything yourself, it's because *something* triggered a background API call (e.g. reloading MCP servers rebuilds the system prompt and does a round-trip) — not because super-status found a way around the limitation.
+- **Rate-limit data (the `Sessions:` line) and cumulative session token totals (`Total Tokens:` on the Context line) are both empty until after your first message exchange in a session.** Claude Code only populates `rate_limits` and `context_window.total_input_tokens` / `total_output_tokens` once it's made at least one real API call — there's currently no way to see them before that (this is the single most-requested statusLine feature upstream, [tracked here](https://github.com/anthropics/claude-code/issues/27915)). If you see the `Sessions:` line appear without having typed anything yourself, it's because *something* triggered a background API call (e.g. reloading MCP servers rebuilds the system prompt and does a round-trip) — not because super-status found a way around the limitation.
 - **The permission-mode indicator (`⏵⏵ auto mode on ...`) disappears while Claude is thinking.** That line is Claude Code's own footer, not part of super-status — Claude Code temporarily replaces it with the thinking spinner (`✻ ... esc to interrupt`) while a response is being generated, and it comes back when the turn ends. Normal, and nothing a statusline script can influence.
 - **A `Sessions: 5h:` percentage above 100% (e.g. `108%`) is expected, not a bug.** Anthropic's own usage accounting can briefly overshoot the limit before Claude Code cuts a session off (e.g. a burst of concurrent or cached requests landing faster than the limit check). super-status prints the percentage exactly as reported rather than silently clamping it to 100 — only the bar's fill width is clamped, so the bar still reads as "full."
 
@@ -135,7 +138,13 @@ To make both time fields update continuously instead of only on those events, ad
 | `Lines Changes:`   | `+45 -12`             | Lines added/removed across the **whole workspace** since session start — every git repo under the project folder is measured (nested client/server repos included), against a baseline recorded when the session began, so pre-existing uncommitted changes don't count but committed, uncommitted, and untracked changes made during the session all do, even when they were made by sub-agents running in their own sessions (e.g. multi-agent orchestration). Falls back to Claude Code's own per-session counters when no git repo is found. Hidden if both are zero. Refreshed at most every 10s |
 | `Claude Version:`  | `v2.1.90`             | Claude Code CLI version                                                |
 
-### Line 2 — Sessions / Balance (backend-dependent — see Backend modes below)
+### Line 2 — Subscription cycle (subscription mode only)
+
+| Field           | Example                                              | Meaning                                                                                                                                                                                                                              |
+| --------------- | ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `Subscription:` | `62% [############--------] (Reset: 14d [14/08/2026])` | How far through your current monthly billing cycle you are, with days remaining (rounded up) and the renewal date. Cycles are true calendar months from your declared start date (14/07 renews on 14/08 — 28–31 days depending on the month; a start day missing from a shorter month, e.g. the 31st, clamps to that month's last day). Green early in the cycle, orange mid-cycle, red in the final ~2 days — informational progress, not a rate-limit warning. Requires the one-time setup in **Subscription tracking setup** below; until then a bold red reminder line appears at the very top instead |
+
+### Line 3 — Sessions / Balance (backend-dependent — see Backend modes below)
 
 | Field           | Example                                                                              | Meaning                                                                                                                                                                                                        |
 | --------------- | ------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -145,15 +154,15 @@ To make both time fields update continuously instead of only on those events, ad
 
 Colors: green = healthy, orange = getting close, red = at/near the limit (the weekly window uses tighter thresholds than 5-hour, since a blown weekly quota is more disruptive than a 5-hour one that resets soon). A percentage above 100% can happen (see **Live updates** above) — it's shown as-is rather than clamped, though the bar itself always reads as full.
 
-### Line 3 — Context & cost
+### Line 4 — Context & cost
 
 | Field      | Example                                 | Meaning                                                                                          |
 | ---------- | ---------------------------------------- | -------------------------------------------------------------------------------------------------- |
 | `Context:` | `14% [##------------------] (28k/200k)` | How full the context window is, with a usage-colored bar and the raw token count                  |
-| `Cost:`    | `$0.14`                                  | Session cost in USD                                                                                |
-| `Tokens:`  | `152.3k in / 45.2k out`                  | Cumulative input/output tokens for the **whole session** — unlike the `Context:` figure, this doesn't reset after `/compact`. Both figures are computed by super-status itself, by summing every assistant message's usage fields out of the session transcript (input + cache-creation + cache-read tokens for `in`, output tokens for `out`), rather than trusted straight from Claude Code's own JSON — its `total_input_tokens` is unreliable early in a session and `total_output_tokens` only reflects the *last* exchange rather than a running total. Cached per `session_id`, re-parsed only when the transcript file's mtime changes. Empty until after your first message exchange (see **Live updates**) |
+| `Cost:` / `Cost (est.):` | `$0.14`                    | Session cost in USD, always computed at standard API list rates. On API-key/OpenRouter mode this is real spend, labeled `Cost:`. On subscription mode you pay a flat monthly fee regardless, so the same number is only an API-equivalent estimate of what the session *would* have cost — labeled `Cost (est.):` to make that explicit |
+| `Total Tokens:`  | `152.3k in / 45.2k out`            | Cumulative input/output tokens for the **whole session** — unlike the `Context:` figure, this doesn't reset after `/compact`. Both figures are computed by super-status itself, by summing every assistant message's usage fields out of the session transcript (input + cache-creation + cache-read tokens for `in`, output tokens for `out`), rather than trusted straight from Claude Code's own JSON — its `total_input_tokens` is unreliable early in a session and `total_output_tokens` only reflects the *last* exchange rather than a running total. Cached per `session_id`, re-parsed only when the transcript file's mtime changes. Empty until after your first message exchange (see **Live updates**) |
 
-### Line 4 — Project & timing
+### Line 5 — Project & timing
 
 | Field                       | Example | Meaning                                                                     |
 | --------------------------- | ------- | ---------------------------------------------------------------------------- |
@@ -161,23 +170,33 @@ Colors: green = healthy, orange = getting close, red = at/near the limit (the we
 | `Total Session Time:`       | `1h30m` | Total session wall-clock time                                              |
 | `Total thinking time:`      | `1m38s` | Cumulative time spent waiting on model responses this session              |
 
-### Line 5 — Quality scores & tool usage
+### Line 6 — Quality scores
 
 | Field                              | Example  | Meaning                                                                                                                                        |
 | ----------------------------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `Context Efficiency Grade (A–F):`  | `A(99)`  | Context-efficiency grade, based on how much of your context came from cache reuse vs. fresh tokens. Higher = cheaper/more efficient session. |
-| `Efficiency Grade (A–F):`          | `A(100)` | Efficiency grade, based on how much code changed per tool call. Higher = more productive tool usage.                                          |
-| `Tool Calls:`                       | `3`      | Number of tool calls made so far this session                                                                                                 |
+| `Cache Vs Tokens:`                 | `71%`    | How much of your current context came from cache reuse vs. fresh tokens, as a plain percentage (green ≥75%, orange ≥40%, red below). Higher = cheaper/more efficient session. |
+| `Efficiency Grade (A–F):`          | `A(100)` | Efficiency grade, based on how much code changed per *edit-capable* tool call (`Edit`, `Write`, etc. — read-only tools like `Read`/`Grep` don't count against it). Higher = more productive tool usage. Omitted entirely until the session has made at least one edit-capable call, rather than showing a misleading `F(0)` during exploration |
 
-> **Note:** the two efficiency grades are *custom heuristics* built for this project, not official Claude Code metrics. They're a useful relative signal, not an absolute judgment of session quality.
+> **Note:** both metrics are *custom heuristics* built for this project, not official Claude Code metrics. They're a useful relative signal, not an absolute judgment of session quality.
 
-### Line 6 — Tools Stats
+### Line 7 — Tool Calls
 
 | Field           | Example                                          | Meaning                                                                                                                                                                                                                  |
 | --------------- | -------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `Tools Stats:`  | `npm: 34 \| pnpm: 10 \| git: 6 \| edit: 2 \| write: 1 \| other: 0` | Call counts per tool category this session, parsed from the transcript. `Bash` calls are broken out by their underlying command (`npm`, `git`, `pnpm`, ...) rather than lumped under one `bash` bucket. All `mcp__*` calls, regardless of server or tool, are folded into a single `mcp` bucket. Only the top 5 categories are shown individually, ranked by count; everything else is summed into a trailing `other` bucket (shown even at `0`, so the line's shape stays stable as usage shifts) |
+| `Tool Calls (N):`  | `Skills: 1 \| Code: 3 \| Commands: 1 \| Read: 3 \| MCP Call: 0 \| Other: 1` | Every tool call this session, parsed from the transcript and grouped into six semantic buckets (mapping below). `N` is the session's total tool-call count, and the six buckets always sum to exactly `N`. All six buckets always print, zeros included, so the line's shape stays stable as usage shifts |
 
-Hidden entirely if no transcript is available yet (e.g. the very first render of a brand-new session).
+The bucket mapping:
+
+| Bucket     | Tool names that fall into it                                     |
+|------------|------------------------------------------------------------------|
+| `Skills`   | `Skill` (slash-command/skill invocations)                        |
+| `Code`     | `Edit`, `Write`, `MultiEdit`, `NotebookEdit` (edit-capable tools) |
+| `Commands` | `Bash` (shell/command execution)                                 |
+| `Read`     | `Read`, `Glob`, `Grep`, `LS` (read-only/inspection tools)         |
+| `MCP Call` | any tool name prefixed `mcp__` (third-party/MCP tool calls)      |
+| `Other`    | anything not matched above (guaranteed catch-all — nothing silently disappears) |
+
+Hidden entirely if no transcript is available yet, or before the session's first tool call.
 
 ## Backend modes
 
@@ -185,11 +204,41 @@ super-status detects which backend you're running Claude Code against and adjust
 
 ### Mode 1 — Anthropic subscription
 
-Detected when Claude Code's `rate_limits` data is present (i.e. you're authenticated against an Anthropic Max/Pro plan). Shows the `Sessions:` line with 5h/Nd usage, colored bars, and reset countdowns as described above.
+Detected when Claude Code's `rate_limits` data is present (i.e. you're authenticated against an Anthropic Max/Pro plan). Shows the `Sessions:` line with 5h/Nd usage, colored bars, and reset countdowns as described above, plus the `Subscription:` billing-cycle line (after the one-time setup below). `Cost:` is labeled `Cost (est.):` in this mode, since it's an API-equivalent estimate rather than real spend.
+
+## Subscription tracking setup
+
+The `Subscription:` line tracks how far you are through your current monthly billing cycle. It can't be automatic: Anthropic exposes no billing or renewal date anywhere in the JSON Claude Code hands to statusline scripts — so you declare your subscription start date once, in a `CLAUDE.md` file, and super-status derives every subsequent monthly cycle from it.
+
+**Setup (one line, once):** paste this into your CLAUDE.md — either the project-local `CLAUDE.md` at the repo root, or the global `~/.claude/CLAUDE.md` — with your own date:
+
+```
+<!-- "subscription_start_date": "14/07/2026" -->
+```
+
+- The date **must be dd/MM/yyyy** (day first — `14/07/2026`, not `07/14/2026`), matching every other date this script prints.
+- The HTML-comment wrapper is recommended so the line doesn't clutter the rendered doc, but it isn't required — the key is matched anywhere in the file (comment, code block, or plain text).
+- A project-local `CLAUDE.md` takes priority over the global one, so you can override per project if needed.
+
+**If the key is missing from both files**, a bold red reminder appears as the very first line of the statusline until you add it:
+
+```
+SUBSCRIPTION START DATE IS MISSING - ADD IT TO THE CLAUDE.MD: "subscription_start_date": "dd/MM/yyyy"
+```
+
+**If the key is present but the value isn't a real dd/MM/yyyy date** (wrong format, or an impossible date like `31/02/2026`), the same line appears with `INVALID` instead of `MISSING`. Note that an invalid value in the local file is reported as-is — it does **not** fall back to the global file, since a broken local value is almost certainly a typo you'd want to know about rather than silently mask.
+
+**Once a valid date is found**, the warning disappears and the `Subscription:` line renders right below the identity line:
+
+```
+Subscription: 62% [############--------] (Reset: 14d [14/08/2026])
+```
+
+This whole feature is subscription-mode only — API-key and OpenRouter users have no monthly cycle to track, so for them there's no warning, no bar, and no CLAUDE.md reads at all.
 
 ### Mode 2 — Anthropic API key or other pay-as-you-go backend (e.g. z.ai)
 
-Detected when `rate_limits` is absent. The `Sessions:` line is omitted entirely rather than showing empty or misleading data, because no backend in this mode currently exposes a programmatic balance check (confirmed against Anthropic's own API — there's no public endpoint for pay-as-you-go credit balance — and against z.ai's docs, which only offer a dashboard view). `Cost:` on line 3 remains the primary usage signal available in this mode.
+Detected when `rate_limits` is absent. The `Sessions:` line is omitted entirely rather than showing empty or misleading data, because no backend in this mode currently exposes a programmatic balance check (confirmed against Anthropic's own API — there's no public endpoint for pay-as-you-go credit balance — and against z.ai's docs, which only offer a dashboard view). `Cost:` on the Context line remains the primary usage signal available in this mode.
 
 ### Mode 3 — OpenRouter
 
@@ -202,7 +251,7 @@ Detected via `$ANTHROPIC_BASE_URL` containing `openrouter.ai`. The `Sessions:` l
 Everything above covers *paid* backends. If you're routing through OpenRouter to a free-tier model, a couple of things layer on top of Mode 3's behavior:
 
 - **`Cost:` will show `$0.00`**, and the balance bar will barely move — accurate, just not very informative on a free model.
-- **`Context Efficiency Grade (A–F)` may sit permanently low.** Most free/non-Anthropic models don't support Anthropic-style prompt caching, so the cache-reuse ratio this score is based on stays near zero — that reflects the backend's capabilities, not the quality of your actual session.
+- **`Cache Vs Tokens:` may sit permanently low.** Most free/non-Anthropic models don't support Anthropic-style prompt caching, so the cache-reuse percentage stays near zero — that reflects the backend's capabilities, not the quality of your actual session.
 
 General reliability note: Claude Code is built and tested against Anthropic's first-party API. Routing through OpenRouter — especially to free, non-Anthropic models — isn't officially guaranteed to behave identically, and tool-calling reliability in particular varies a lot by model. If things look inconsistent, that's more likely the backend than the statusline.
 
@@ -216,9 +265,11 @@ bash ~/.claude/super-status/doctor.sh
 
 This checks whether `~/.claude/settings.json` still points at the right script and re-patches it if not.
 
-**A field (or a whole line) shows nothing** — that's by design. Every field is hidden — label, value, and separator together — rather than showing `null`/blank placeholders when its data isn't available (e.g. `tokei` not installed, no git repo, no rate-limit data on a non-Anthropic backend, no transcript yet for `Tools Stats:`). If every field on a line is missing, the whole line is omitted rather than printing an empty line.
+**A field (or a whole line) shows nothing** — that's by design. Every field is hidden — label, value, and separator together — rather than showing `null`/blank placeholders when its data isn't available (e.g. `tokei` not installed, no git repo, no rate-limit data on a non-Anthropic backend, no transcript yet for `Tool Calls:`). If every field on a line is missing, the whole line is omitted rather than printing an empty line. The one exception is `Efficiency Grade (A–F):`, which is also deliberately hidden while the session hasn't made any edit-capable tool call yet — a grade of `F(0)` during pure exploration would be misleading, not informative.
 
-**`Sessions:` or `Tokens:` shows nothing even though I'm on a subscription plan** — this is expected before your first message exchange in a session; see **Live updates** above. It should appear after your next turn.
+**`Sessions:` or `Total Tokens:` shows nothing even though I'm on a subscription plan** — this is expected before your first message exchange in a session; see **Live updates** above. It should appear after your next turn.
+
+**A bold red `SUBSCRIPTION START DATE IS MISSING/INVALID` line appears at the top** — that's the subscription-cycle feature asking for its one-time setup; see **Subscription tracking setup** above for the exact line to paste into your CLAUDE.md and the dd/MM/yyyy format it requires.
 
 **`Sessions: 5h:` shows a percentage over 100%** — expected; see **Live updates** above. Not a bug in this script.
 
@@ -232,12 +283,12 @@ This checks whether `~/.claude/settings.json` still points at the right script a
 
 **OpenRouter balance line isn't showing** — check that `OPENROUTER_API_KEY` is exported in the environment Claude Code runs in (not just your interactive shell — it needs to be set wherever the statusline script actually executes), and that `$ANTHROPIC_BASE_URL` contains `openrouter.ai`. You can sanity-check the API key works directly: `curl -s https://openrouter.ai/api/v1/credits -H "Authorization: Bearer $OPENROUTER_API_KEY"` should return your balance as JSON.
 
-**`Tools Stats:` isn't showing** — it needs a `transcript_path` from Claude Code pointing at a readable JSONL file with at least one recorded tool call. On a session's very first render, before any tool has been used yet, this line is correctly absent. Also requires `python3` to be on `PATH`.
+**`Tool Calls:` isn't showing** — it needs a `transcript_path` from Claude Code pointing at a readable JSONL file with at least one recorded tool call. On a session's very first render, before any tool has been used yet, this line is correctly absent. Also requires `python3` to be on `PATH`.
 
 ## Thanks
 
-super-status's `Context Efficiency Grade` and `Efficiency Grade` scores were inspired by the custom scoring concept in [token-optimizer](https://github.com/alexgreensh/token-optimizer). The exact formulas here are our own heuristics (see §4 of `plan.md`), not a port of token-optimizer's internal logic, but the idea of grading a session's context/tool-call efficiency came from that project. Thanks a lot to [@alexgreensh](https://github.com/alexgreensh) for the inspiration.
+super-status's `Cache Vs Tokens` percentage and `Efficiency Grade` score were inspired by the custom scoring concept in [token-optimizer](https://github.com/alexgreensh/token-optimizer). The exact formulas here are our own heuristics (see §4 of `plan.md`), not a port of token-optimizer's internal logic, but the idea of grading a session's context/tool-call efficiency came from that project. Thanks a lot to [@alexgreensh](https://github.com/alexgreensh) for the inspiration.
 
 ## A living project
 
-super-status has already gone through one structural refactor — from a dense, symbol-heavy 3-line layout to the labeled, multi-line format above — and will keep iterating as fields get tuned, added, or adjusted based on real day-to-day use. Most recently: usage-colored progress bars across every line, reset countdowns alongside clock/date, cumulative session token totals, the `Time:` field retired in favor of moving `Claude Version:` onto line 1, a new `Tools Stats:` line breaking down call counts per tool category (with `Bash` calls split out by underlying command, and all `mcp__*` calls folded into one bucket), and `Lines Changes:` reworked to measure the whole workspace via git — nested repos and sub-agent work included — instead of only the current session's own edits.
+super-status has already gone through one structural refactor — from a dense, symbol-heavy 3-line layout to the labeled, multi-line format above — and will keep iterating as fields get tuned, added, or adjusted based on real day-to-day use. Most recently: a `Subscription:` billing-cycle bar sourced from a user-declared start date in CLAUDE.md, the per-command `Tools Stats:` breakdown replaced by a stable six-bucket `Tool Calls (N):` line (Skills / Code / Commands / Read / MCP Call / Other), the letter-graded context score simplified to a plain `Cache Vs Tokens:` percentage, `Efficiency Grade` re-based on edit-capable tool calls only (and hidden during pure exploration), `Cost:` relabeled `Cost (est.):` on subscription mode where it's an estimate rather than real spend, and `Tokens:` renamed `Total Tokens:`.

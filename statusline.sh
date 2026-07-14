@@ -19,6 +19,7 @@ GREY=$'\033[90m'
 BLUE=$'\033[34m'
 WHITE=$'\033[37m'
 RED=$'\033[31m'
+BOLD_RED=$'\033[1;31m'
 ORANGE=$'\033[38;5;208m'
 YELLOW=$'\033[33m'
 
@@ -130,6 +131,66 @@ format_datetime_epoch() {
     date -d "@${epoch%.*}" +"%d/%m/%Y %H:%M" 2>/dev/null || date -r "${epoch%.*}" +"%d/%m/%Y %H:%M" 2>/dev/null || echo ""
 }
 
+# dd/MM/yyyy only — used for the subscription cycle renewal date.
+format_date_epoch() {
+    local epoch="$1"
+    is_num "$epoch" || { echo ""; return; }
+    date -d "@${epoch%.*}" +"%d/%m/%Y" 2>/dev/null || date -r "${epoch%.*}" +"%d/%m/%Y" 2>/dev/null || echo ""
+}
+
+# dd/MM/yyyy -> epoch seconds; prints nothing on invalid input.
+# Not `date -d "14/07/2026"`: BSD date has no GNU-style -d, and GNU date reads
+# slash dates as MM/DD — so a BSD/GNU dual-command fallback on an unambiguous
+# format is used instead, same pattern as the stat calls elsewhere.
+# Midnight is passed explicitly because BSD `date -j -f` fills unspecified
+# time fields from the current clock, which would drift the epoch within a day.
+# Round-trip check: BSD strptime silently normalizes 31/02 -> 03/03, so the
+# epoch is re-formatted and must match the input exactly (GNU date rejects
+# 2026-02-31 outright, so its branch never lies).
+parse_subscription_date() {
+    local _d="$1" _day _month _year _rest _epoch _back
+    [[ "$_d" =~ ^[0-3][0-9]/[0-1][0-9]/[0-9]{4}$ ]] || return
+    _day="${_d%%/*}"; _rest="${_d#*/}"
+    _month="${_rest%%/*}"; _year="${_rest#*/}"
+    _epoch=$(date -j -f "%d/%m/%Y %H:%M:%S" "$_d 00:00:00" +%s 2>/dev/null \
+          || date -d "${_year}-${_month}-${_day} 00:00:00" +%s 2>/dev/null) || return
+    _back=$(date -r "$_epoch" +%d/%m/%Y 2>/dev/null \
+         || date -d "@${_epoch}" +%d/%m/%Y 2>/dev/null)
+    [ "$_back" = "$_d" ] && printf '%s' "$_epoch"
+}
+
+days_in_month() {
+    local m=$(( 10#$1 )) y=$(( 10#$2 ))
+    case "$m" in
+        1|3|5|7|8|10|12) echo 31 ;;
+        4|6|9|11) echo 30 ;;
+        2)
+            if [ $(( y % 4 )) -eq 0 ] && { [ $(( y % 100 )) -ne 0 ] || [ $(( y % 400 )) -eq 0 ]; }; then
+                echo 29
+            else
+                echo 28
+            fi
+            ;;
+        *) echo "" ;;
+    esac
+}
+
+# day month year + N calendar months -> epoch of the resulting date at
+# midnight. Calendar months, not fixed 30-day blocks — "14/07 -> 14/08" is
+# same day next month. A start day missing from the target month (31/01 ->
+# February) clamps to that month's last day.
+add_months_epoch() {
+    local day=$(( 10#$1 )) month=$(( 10#$2 )) year=$(( 10#$3 )) n="$4"
+    local total_month=$(( year * 12 + month - 1 + n ))
+    local target_year=$(( total_month / 12 ))
+    local target_month=$(( total_month % 12 + 1 ))
+    local max_day
+    max_day=$(days_in_month "$target_month" "$target_year")
+    [ -n "$max_day" ] || return
+    [ "$day" -gt "$max_day" ] && day=$max_day
+    parse_subscription_date "$(printf '%02d/%02d/%04d' "$day" "$target_month" "$target_year")"
+}
+
 make_bar() {
     local pct="$1" width="${2:-20}"
     is_num "$pct" || pct=0
@@ -183,8 +244,8 @@ worktree=$(jqr '.workspace.git_worktree // empty')
 [ "$worktree" = "null" ] && worktree=""
 
 # Session/transcript identifiers — must be resolved before every consumer:
-# the cumulative token totals, workspace line changes, Tool Calls, and
-# Tools Stats sections all key their caches off these. (These previously
+# the cumulative token totals, workspace line changes, and Tool Calls
+# sections all key their caches off these. (These previously
 # lived below the token-totals section, which silently killed the Tokens:
 # field — transcript_path was always empty when that block ran.)
 session_id=$(jqr '.session_id // empty')
@@ -437,6 +498,84 @@ IS_SUBSCRIPTION=0
 is_num "$five_util_probe" && is_num "$seven_util_probe" && IS_SUBSCRIPTION=1
 
 # ---------------------------------------------------------------------------
+# Subscription renewal cycle — Anthropic exposes no billing/renewal date in
+# the stdin JSON, so the start date is read from a user-declared
+#   "subscription_start_date": "dd/MM/yyyy"
+# line in CLAUDE.md — local project file first, then the global one. Local
+# wins; a found-but-invalid value short-circuits (does NOT fall through to
+# global). Subscription mode only: API-key/OpenRouter users have no cycle to
+# track, so the whole feature (file reads, warning, bar) is inert for them.
+# ---------------------------------------------------------------------------
+SUBSCRIPTION_DATE_STATE=""
+SUBSCRIPTION_START_RAW=""
+
+resolve_subscription_start_date() {
+    local _file _raw
+    for _file in "${git_root:+$git_root/CLAUDE.md}" "$HOME/.claude/CLAUDE.md"; do
+        [ -n "$_file" ] && [ -f "$_file" ] || continue
+        _raw=$(grep -o '"subscription_start_date"[[:space:]]*:[[:space:]]*"[^"]*"' "$_file" 2>/dev/null | head -n1)
+        [ -z "$_raw" ] && continue
+        _raw=$(printf '%s' "$_raw" | sed 's/.*:[[:space:]]*"\([^"]*\)"$/\1/')
+        if [ -n "$(parse_subscription_date "$_raw")" ]; then
+            SUBSCRIPTION_DATE_STATE="valid"
+            SUBSCRIPTION_START_RAW="$_raw"
+        else
+            SUBSCRIPTION_DATE_STATE="invalid"
+        fi
+        return
+    done
+    SUBSCRIPTION_DATE_STATE="missing"
+}
+
+subscription_warning_line=""
+subscription_line=""
+if [ "$IS_SUBSCRIPTION" -eq 1 ]; then
+    resolve_subscription_start_date
+    case "$SUBSCRIPTION_DATE_STATE" in
+        missing)
+            subscription_warning_line="${BOLD_RED}SUBSCRIPTION START DATE IS MISSING - ADD IT TO THE CLAUDE.MD: \"subscription_start_date\": \"dd/MM/yyyy\"${RESET}"
+            ;;
+        invalid)
+            subscription_warning_line="${BOLD_RED}SUBSCRIPTION START DATE IS INVALID - ADD IT TO THE CLAUDE.MD: \"subscription_start_date\": \"dd/MM/yyyy\"${RESET}"
+            ;;
+        valid)
+            _sub_day="${SUBSCRIPTION_START_RAW%%/*}"
+            _sub_rest="${SUBSCRIPTION_START_RAW#*/}"
+            _sub_month="${_sub_rest%%/*}"; _sub_year="${_sub_rest#*/}"
+            _sub_now=$(date +%s)
+            # Whole-month distance gives a starting guess one cycle early;
+            # walking forward from there keeps the loop to a couple of
+            # add_months_epoch calls no matter how old the start date is.
+            _sub_n=$(( ($(date +%Y) * 12 + 10#$(date +%m)) - (10#$_sub_year * 12 + 10#$_sub_month) - 1 ))
+            [ "$_sub_n" -lt 0 ] && _sub_n=0
+            _cycle_end=$(add_months_epoch "$_sub_day" "$_sub_month" "$_sub_year" $(( _sub_n + 1 )))
+            while [ -n "$_cycle_end" ] && [ "$_cycle_end" -le "$_sub_now" ]; do
+                _sub_n=$(( _sub_n + 1 ))
+                _cycle_end=$(add_months_epoch "$_sub_day" "$_sub_month" "$_sub_year" $(( _sub_n + 1 )))
+            done
+            _cycle_start=$(add_months_epoch "$_sub_day" "$_sub_month" "$_sub_year" "$_sub_n")
+            if is_num "$_cycle_start" && is_num "$_cycle_end" && [ "$_cycle_end" -gt "$_cycle_start" ]; then
+                _sub_pct=$(( (_sub_now - _cycle_start) * 100 / (_cycle_end - _cycle_start) ))
+                [ "$_sub_pct" -lt 0 ] && _sub_pct=0
+                [ "$_sub_pct" -gt 100 ] && _sub_pct=100
+                # Ceiling division, same rounding convention as the weekly reset label
+                _sub_days_left=$(( (_cycle_end - _sub_now + 86399) / 86400 ))
+                [ "$_sub_days_left" -lt 0 ] && _sub_days_left=0
+                _sub_bar=$(make_bar "$_sub_pct" "$BAR_WIDTH")
+                _sub_reset_date=$(format_date_epoch "$_cycle_end")
+                # Informational progress coloring, not a rate-limit warning:
+                # green early, orange mid-cycle, red in the final ~2 days.
+                if [ "$_sub_days_left" -le 2 ]; then _sub_color="$RED"
+                elif [ "$_sub_pct" -ge 50 ]; then _sub_color="$ORANGE"
+                else _sub_color="$GREEN"
+                fi
+                subscription_line="${WHITE}Subscription:${RESET} ${_sub_color}${_sub_pct}%${RESET} ${_sub_color}[${_sub_bar}]${RESET} ${GREY}(Reset: ${_sub_days_left}d [${_sub_reset_date}])${RESET}"
+            fi
+            ;;
+    esac
+fi
+
+# ---------------------------------------------------------------------------
 # Line 1 — Model | Repo | Branch | Worktree | Lines Changes | Claude Version
 # ---------------------------------------------------------------------------
 line1=""
@@ -572,12 +711,17 @@ fi
 # ---------------------------------------------------------------------------
 line3="${WHITE}Context:${RESET} ${pct_color}${pct}%${RESET} ${pct_color}[${ctx_bar}]${RESET} ${GREY}(${token_used_k}k/${token_max_k}k)${RESET}"
 if is_num "$cost_usd"; then
-    line3="${line3} | ${WHITE}Cost:${RESET} ${YELLOW}\$$(printf "%.2f" "$cost_usd")${RESET}"
+    # On subscription mode this figure is computed at standard API list rates
+    # and has no relationship to the flat monthly fee actually billed — it's
+    # an API-equivalent estimate. On API-key/OpenRouter mode it IS real spend.
+    cost_label="Cost:"
+    [ "$IS_SUBSCRIPTION" -eq 1 ] && cost_label="Cost (est.):"
+    line3="${line3} | ${WHITE}${cost_label}${RESET} ${YELLOW}\$$(printf "%.2f" "$cost_usd")${RESET}"
 fi
 if is_num "$session_total_input" && is_num "$session_total_output"; then
     _in_fmt=$(fmt_tokens_k "$session_total_input")
     _out_fmt=$(fmt_tokens_k "$session_total_output")
-    line3="${line3} | ${WHITE}Tokens:${RESET} ${GREY}${_in_fmt} in / ${_out_fmt} out${RESET}"
+    line3="${line3} | ${WHITE}Total Tokens:${RESET} ${GREY}${_in_fmt} in / ${_out_fmt} out${RESET}"
 fi
 
 # ---------------------------------------------------------------------------
@@ -597,73 +741,24 @@ if [ -n "$thinking_value" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Line 5 — ContextQ grade | Eff grade | Tool Calls
+# Shared transcript pass (feeds lines 5 and 6) — every tool_use block in the
+# transcript JSONL is mapped into exactly one of six semantic buckets:
+#   Skills   -> Skill
+#   Code     -> Edit / Write / MultiEdit / NotebookEdit (edit-capable tools)
+#   Commands -> Bash (no per-command split — that open-ended list is what
+#               made the old Tools Stats line unstable)
+#   Read     -> Read / Glob / Grep / LS
+#   MCP Call -> any mcp__* prefixed tool, regardless of server
+#   Other    -> guaranteed fallback, so nothing silently disappears
+# The bucket sum always equals the printed total by construction. The Code
+# bucket doubles as the Efficiency Grade denominator on line 5. Cached by
+# session_id + transcript mtime, same as the other transcript-derived fields.
 # ---------------------------------------------------------------------------
-total_for_ratio=$(( ${token_input:-0} + ${token_cc:-0} + ${token_cr:-0} ))
-ctxq_grade=""; cache_ratio=""
-if [ "$total_for_ratio" -gt 0 ]; then
-    cache_ratio=$(awk "BEGIN{printf \"%.0f\", (${token_cr:-0} / $total_for_ratio) * 100}" 2>/dev/null)
-    ctxq_grade=$(grade_for "$cache_ratio")
-fi
-
-# Tool call count — parsed from the transcript JSONL, cached by session_id + mtime
-tool_count=""
+tool_calls_total=""
+bucket_skills=""; bucket_code=""; bucket_commands=""
+bucket_read=""; bucket_mcp=""; bucket_other=""
 if [ -n "$transcript_path" ] && [ -f "$transcript_path" ]; then
-    _ts_dir="/tmp/super-status/tools-cache"
-    mkdir -p "$_ts_dir"
-    _ts_key="${session_id:-$(echo "$transcript_path" | tr '/' '_')}"
-    _ts_file="$_ts_dir/${_ts_key}.count"
-    _ts_stamp="$_ts_dir/${_ts_key}.mtime"
-    _src_mtime=$(stat -c %Y "$transcript_path" 2>/dev/null || stat -f %m "$transcript_path" 2>/dev/null || echo 0)
-    _cached_mtime=$(cat "$_ts_stamp" 2>/dev/null || echo -1)
-    if [ "$_src_mtime" != "$_cached_mtime" ]; then
-        # grep -c still prints "0" to stdout on zero matches, but exits 1 (its
-        # "no match" signal) — so `grep -c ... || echo 0` would run BOTH and
-        # capture "0\n0" into the variable. Capture once, then validate instead.
-        _count=$(grep -c '"type":"tool_use"' "$transcript_path" 2>/dev/null)
-        is_num "$_count" || _count=0
-        echo "$_count" > "$_ts_file"
-        echo "$_src_mtime" > "$_ts_stamp"
-    fi
-    # head -n1 also self-heals any cache file left corrupted by the old bug
-    tool_count=$(head -n1 "$_ts_file" 2>/dev/null)
-    is_num "$tool_count" || tool_count=0
-    tool_count=$(( tool_count + 0 ))
-fi
-
-eff_grade=""; eff_score=""
-if [ -n "$tool_count" ] && [ "$tool_count" -gt 0 ]; then
-    lines_changed=$(( la + lr ))
-    ratio=$(awk "BEGIN{printf \"%.2f\", $lines_changed / $tool_count}" 2>/dev/null)
-    eff_score=$(awk "BEGIN{s=$ratio*40; if(s>100) s=100; printf \"%.0f\", s}" 2>/dev/null)
-    eff_grade=$(grade_for "$eff_score")
-fi
-
-line5=""
-if [ -n "$ctxq_grade" ]; then
-    ctxq_color=$(grade_color "$ctxq_grade")
-    line5="${WHITE}Context Efficiency Grade (A–F):${RESET} ${ctxq_color}${ctxq_grade}(${cache_ratio})${RESET}"
-fi
-if [ -n "$eff_grade" ]; then
-    eff_color=$(grade_color "$eff_grade")
-    [ -n "$line5" ] && line5="${line5} | "
-    line5="${line5}${WHITE}Efficiency Grade (A–F):${RESET} ${eff_color}${eff_grade}(${eff_score})${RESET}"
-fi
-
-# ---------------------------------------------------------------------------
-# Line 6 — Tools Stats: call counts per tool category this session, parsed
-# from the transcript JSONL and cached by mtime. Bash calls are categorized
-# by their underlying command (npm, git, pnpm, ...) rather than lumped
-# together as "Bash", so you can see what you're actually running. All
-# mcp__* calls are folded into one "mcp" bucket regardless of server/tool.
-# Only the top TOOLS_STATS_TOP_N categories are shown individually, ranked
-# by count; everything else is summed into a trailing "other" bucket (shown
-# even at 0, so the shape of the line stays stable as usage shifts).
-# ---------------------------------------------------------------------------
-TOOLS_STATS_TOP_N=5
-tools_stats=""
-if [ -n "$transcript_path" ] && [ -f "$transcript_path" ]; then
-    _tst_dir="/tmp/super-status/toolstats-cache"
+    _tst_dir="/tmp/super-status/toolcalls-cache"
     mkdir -p "$_tst_dir"
     _tst_key="${session_id:-$(echo "$transcript_path" | tr '/' '_')}"
     _tst_file="$_tst_dir/${_tst_key}.txt"
@@ -673,22 +768,11 @@ if [ -n "$transcript_path" ] && [ -f "$transcript_path" ]; then
     if [ "$_tst_src_mtime" != "$_tst_cached_mtime" ]; then
         _tst_value=$(python3 -c "
 import json, sys
-from collections import Counter
 
 path = sys.argv[1]
-top_n = int(sys.argv[2])
-counts = Counter()
-
-def bash_category(cmd):
-    if not isinstance(cmd, str):
-        return 'bash'
-    cmd = cmd.strip()
-    if not cmd:
-        return 'bash'
-    first = cmd.split()[0]
-    # drop a path prefix, e.g. /usr/bin/git -> git
-    first = first.rstrip(':').split('/')[-1]
-    return first.lower() if first else 'bash'
+buckets = {'SKILLS': 0, 'CODE': 0, 'COMMANDS': 0, 'READ': 0, 'MCP': 0, 'OTHER': 0}
+code_tools = {'edit', 'write', 'multiedit', 'notebookedit'}
+read_tools = {'read', 'glob', 'grep', 'ls'}
 
 try:
     with open(path, 'r') as f:
@@ -707,53 +791,96 @@ try:
                 if not (isinstance(block, dict) and block.get('type') == 'tool_use'):
                     continue
                 name = block.get('name') or ''
+                low = name.lower()
                 if name.startswith('mcp__'):
-                    counts['mcp'] += 1
-                elif name.lower() == 'bash':
-                    inp = block.get('input') or {}
-                    counts[bash_category(inp.get('command'))] += 1
+                    buckets['MCP'] += 1
+                elif low == 'skill':
+                    buckets['SKILLS'] += 1
+                elif low in code_tools:
+                    buckets['CODE'] += 1
+                elif low == 'bash':
+                    buckets['COMMANDS'] += 1
+                elif low in read_tools:
+                    buckets['READ'] += 1
                 else:
-                    counts[name.lower()] += 1
+                    buckets['OTHER'] += 1
 except Exception:
     pass
 
-# Rank by count desc, then name asc for stable ordering on ties.
-ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
-top = ranked[:top_n]
-other = sum(c for _, c in ranked[top_n:])
-total_all = sum(counts.values())
-
-print(f'TOTAL {total_all}')
-for name, c in top:
-    print(f'{name} {c}')
-print(f'other {other}')
-" "$transcript_path" "$TOOLS_STATS_TOP_N" 2>/dev/null)
+print(f'TOTAL {sum(buckets.values())}')
+for key, count in buckets.items():
+    print(f'{key} {count}')
+" "$transcript_path" 2>/dev/null)
         printf '%s\n' "$_tst_value" > "$_tst_file"
         echo "$_tst_src_mtime" > "$_tst_stamp"
     fi
 
-    tools_stats_total=""
     if [ -s "$_tst_file" ]; then
         while IFS=' ' read -r _cat _cnt; do
-            [ -z "$_cat" ] && continue
-            is_num "$_cnt" || _cnt=0
-            if [ "$_cat" = "TOTAL" ]; then
-                tools_stats_total="$_cnt"
-                continue
-            fi
-            [ -n "$tools_stats" ] && tools_stats="${tools_stats} | "
-            tools_stats="${tools_stats}${CYAN}${_cat}:${RESET} ${YELLOW}${_cnt}${RESET}"
+            is_num "$_cnt" || continue
+            case "$_cat" in
+                TOTAL) tool_calls_total="$_cnt" ;;
+                SKILLS) bucket_skills="$_cnt" ;;
+                CODE) bucket_code="$_cnt" ;;
+                COMMANDS) bucket_commands="$_cnt" ;;
+                READ) bucket_read="$_cnt" ;;
+                MCP) bucket_mcp="$_cnt" ;;
+                OTHER) bucket_other="$_cnt" ;;
+            esac
         done < "$_tst_file"
     fi
 fi
 
-line6=""
-if [ -n "$tools_stats" ]; then
-    if [ -n "$tools_stats_total" ]; then
-        line6="${WHITE}Tools Stats (${tools_stats_total}):${RESET} ${tools_stats}"
-    else
-        line6="${WHITE}Tools Stats:${RESET} ${tools_stats}"
+# ---------------------------------------------------------------------------
+# Line 5 — Cache Vs Tokens % | Efficiency Grade
+# ---------------------------------------------------------------------------
+total_for_ratio=$(( ${token_input:-0} + ${token_cc:-0} + ${token_cr:-0} ))
+cache_ratio=""
+if [ "$total_for_ratio" -gt 0 ]; then
+    cache_ratio=$(awk "BEGIN{printf \"%.0f\", (${token_cr:-0} / $total_for_ratio) * 100}" 2>/dev/null)
+fi
+
+# Denominator is edit-capable tool calls only (the Code bucket) — counting
+# read-only tools dragged exploration-heavy sessions toward F even when tool
+# use was entirely appropriate. No edits yet -> the field is omitted rather
+# than showing a misleading F(0).
+eff_grade=""; eff_score=""
+if is_num "$bucket_code" && [ "$bucket_code" -gt 0 ]; then
+    lines_changed=$(( la + lr ))
+    ratio=$(awk "BEGIN{printf \"%.2f\", $lines_changed / $bucket_code}" 2>/dev/null)
+    eff_score=$(awk "BEGIN{s=$ratio*40; if(s>100) s=100; printf \"%.0f\", s}" 2>/dev/null)
+    eff_grade=$(grade_for "$eff_score")
+fi
+
+line5=""
+if is_num "$cache_ratio"; then
+    if [ "$cache_ratio" -ge 75 ]; then cache_color="$GREEN"
+    elif [ "$cache_ratio" -ge 40 ]; then cache_color="$ORANGE"
+    else cache_color="$RED"
     fi
+    line5="${WHITE}Cache Vs Tokens:${RESET} ${cache_color}${cache_ratio}%${RESET}"
+fi
+if [ -n "$eff_grade" ]; then
+    eff_color=$(grade_color "$eff_grade")
+    [ -n "$line5" ] && line5="${line5} | "
+    line5="${line5}${WHITE}Efficiency Grade (A–F):${RESET} ${eff_color}${eff_grade}(${eff_score})${RESET}"
+fi
+
+# ---------------------------------------------------------------------------
+# Line 6 — Tool Calls (N): the six-bucket breakdown from the shared transcript
+# pass above. All six buckets always print (zeros included) — it's a fixed,
+# small taxonomy, so a stable line shape beats the omit-if-zero convention
+# used for the open-ended fields elsewhere.
+# ---------------------------------------------------------------------------
+line6=""
+if is_num "$tool_calls_total" && [ "$tool_calls_total" -gt 0 ]; then
+    line6="${WHITE}Tool Calls (${tool_calls_total}):${RESET}"
+    line6="${line6} ${CYAN}Skills:${RESET} ${YELLOW}${bucket_skills:-0}${RESET}"
+    line6="${line6} | ${CYAN}Code:${RESET} ${YELLOW}${bucket_code:-0}${RESET}"
+    line6="${line6} | ${CYAN}Commands:${RESET} ${YELLOW}${bucket_commands:-0}${RESET}"
+    line6="${line6} | ${CYAN}Read:${RESET} ${YELLOW}${bucket_read:-0}${RESET}"
+    line6="${line6} | ${CYAN}MCP Call:${RESET} ${YELLOW}${bucket_mcp:-0}${RESET}"
+    line6="${line6} | ${CYAN}Other:${RESET} ${YELLOW}${bucket_other:-0}${RESET}"
 fi
 
 # ---------------------------------------------------------------------------
@@ -761,7 +888,9 @@ fi
 # Uses %s (data), never re-parses content as a format string, so literal
 # '%' characters anywhere in the values can never break printf.
 # ---------------------------------------------------------------------------
+[ -n "$subscription_warning_line" ] && printf '%s\n' "$subscription_warning_line"
 [ -n "$line1" ] && printf '%s\n' "$line1"
+[ -n "$subscription_line" ] && printf '%s\n' "$subscription_line"
 [ -n "$line2" ] && printf '%s\n' "$line2"
 [ -n "$line3" ] && printf '%s\n' "$line3"
 [ -n "$line4" ] && printf '%s\n' "$line4"
