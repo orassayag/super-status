@@ -36,9 +36,11 @@ ORANGE=$'\033[38;5;208m'
 # ---------------------------------------------------------------------------
 cfg_language="en"
 cfg_layout="expanded"
+# Bar glyphs deliberately don't span the full cell height (▮/▪, not ▐/▒/█) —
+# full-height glyphs on adjacent lines touch vertically and read as one wall.
 cfg_bar_width=10
-cfg_bar_filled="▐"
-cfg_bar_empty="▒"
+cfg_bar_filled="▮"
+cfg_bar_empty="▪"
 cfg_path_levels=1
 cfg_max_width=0
 cfg_context_value="both"

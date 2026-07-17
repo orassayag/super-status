@@ -19,7 +19,7 @@
 - **Bars are 10 cells (was 20), bracket-less, and bar-first** (`bar NN%` instead of
   `NN% [bar]`) — every bar on every line is the same width, so stacked bars and their
   `%` values align in a column. `bar_width` in config still overrides.
-- **Bar glyph defaults are now `▐`/`▒`** (segmented block bar, was `#`/`-`), and the
+- **Bar glyph defaults are now `▮`/`▪`** (segmented block bar, was `#`/`-`), and the
   empty portion renders muted gray instead of the usage color — the colored part of
   the bar is the signal, the remainder is just scale. Both glyphs remain configurable
   (`"#"`/`"-"` for ASCII-only terminals).

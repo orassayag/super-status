@@ -87,9 +87,9 @@ SUBSCRIPTION_PAYLOAD='{"model":{"display_name":"Opus"},"workspace":{"project_dir
 }
 
 @test "make_bar renders proportional fill and clamps out-of-range percentages" {
-    [ "$(make_bar 50 10)" = "▐▐▐▐▐▒▒▒▒▒" ]
-    [ "$(make_bar 200 10)" = "▐▐▐▐▐▐▐▐▐▐" ]
-    [ "$(make_bar -5 10)" = "▒▒▒▒▒▒▒▒▒▒" ]
+    [ "$(make_bar 50 10)" = "▮▮▮▮▮▪▪▪▪▪" ]
+    [ "$(make_bar 200 10)" = "▮▮▮▮▮▮▮▮▮▮" ]
+    [ "$(make_bar -5 10)" = "▪▪▪▪▪▪▪▪▪▪" ]
 }
 
 @test "grade_for maps score bands to letters" {
