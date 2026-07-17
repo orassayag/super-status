@@ -191,7 +191,7 @@ A malformed config never breaks the render — defaults are used and a one-line 
 |---|---|
 | `preset` | `full` (everything on), `essential` (identity + git + limits + context + todos/agents), or `minimal` (model, branch, context, sessions — compact layout). Applied first; every explicit key below still overrides it |
 | `language` | Label language. Only `en` ships; all labels live in one block in the script, so adding a language is one `case` branch |
-| `layout` | `expanded` (the default multi-line layout) or `compact` (3 lines for small panes) |
+| `layout` | `expanded` (the default multi-line layout) or `compact` (3 lines for small panes — see **Compact layout** below) |
 | `bar_width` | Progress-bar width in glyphs (5–60) |
 | `bar_filled` / `bar_empty` | Bar glyphs — e.g. `"█"` / `"░"` |
 | `path_levels` | How many trailing path components `Repo:` shows (1–5). `2` turns `Repo: client` into `Repo: acme/client`, disambiguating same-named folders |
@@ -201,6 +201,22 @@ A malformed config never breaks the render — defaults are used and a one-line 
 | `git.push_warning_threshold` / `push_critical_threshold` | Unpushed-commit counts at which the `↑N` marker turns orange / red |
 | `colors.*` | Per-element color overrides: named ANSI (`red`, `cyan`, `grey`, `bright-blue`, `orange`, ...), 256-color numbers (`"208"`), or hex (`"#ff8800"`). Empty = built-in default |
 | `thresholds.*` | Percentages at which the context / 5-hour / weekly bars turn orange (warning) and red (critical) |
+
+### Compact layout
+
+`"layout": "compact"` collapses the default multi-line output down to 3 lines for small terminal panes (cmux splits especially) — same fields, same colors, just packed onto fewer lines instead of the default `expanded` layout's 6–10:
+
+```json
+{ "preset": "full", "layout": "compact" }
+```
+
+```
+Model: Claude Sonnet 4.6 | Repo: repo | Branch: master | Context: 42% [########------------] (46k/200k)
+Subscription: 62% [############--------] (Reset: 14d [14/08/2026]) | Sessions: 5h: 99% [###################-] (Reset: 2h30m [12:40]) | 3d: 44% [########------------] (Reset: 3d14h10m [11/07/2026 15:00]) | Cost (est.): $1.23
+Activity: ◐ Edit: auth.ts | ✓ Read ×3 | ✓ Grep ×2
+```
+
+Any line that ends up with nothing to show (e.g. `Sessions:`/`Balance:` both empty, or no agents/todos in flight) is omitted, so the actual line count can be 1–3 depending on backend mode and what's active. `layout` and `preset` are independent — `compact` works with any preset, including no preset at all.
 
 ### Custom layout
 

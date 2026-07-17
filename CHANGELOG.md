@@ -24,6 +24,10 @@ Large upgrade adopting ideas from [claude-hud](https://github.com/jarrodwatts/cl
   settings.json with placeholder paths). (I6)
 - **Context value formats** — `context_value: percent | tokens | remaining | both`,
   with `remaining` using Claude Code's own `remaining_percentage` when present. (I9)
+- **Compact layout** — `layout: expanded | compact` collapses the default
+  multi-line output down to 3 lines for small terminal panes; `lines` in
+  config.json can also override either preset entirely to reorder or merge
+  segments onto shared lines. (I14)
 - **Width-aware truncation** — lines are cut to `$COLUMNS` / config
   `max_width` with a trailing `…`, ANSI-escape- and UTF-8-aware. (I11)
 - **`path_levels`** — show 1–5 trailing path components in the `Repo:` field. (I12)
