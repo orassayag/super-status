@@ -4,6 +4,11 @@
 # Never crashes, never prints null/undefined/NaN — missing data is simply omitted
 # (that field's label, value, and separator are all dropped together).
 # All full dates are rendered dd/MM/yyyy.
+#
+# Optional config: ~/.claude/super-status/config.json (see README). A missing
+# config file means exactly the default behavior; a malformed one falls back to
+# defaults and prints a one-line warning instead of failing.
+# Kill switch: SUPER_STATUS_DISABLE=1 renders nothing for that session.
 
 set -f
 export LC_NUMERIC=C
@@ -16,25 +21,147 @@ CYAN=$'\033[36m'
 GREEN=$'\033[32m'
 MAGENTA=$'\033[35m'
 GREY=$'\033[90m'
-BLUE=$'\033[34m'
 WHITE=$'\033[37m'
 RED=$'\033[31m'
 BOLD_RED=$'\033[1;31m'
 ORANGE=$'\033[38;5;208m'
 YELLOW=$'\033[33m'
 
-input=$(cat)
+# ---------------------------------------------------------------------------
+# Config defaults — a missing/empty config.json yields exactly these, which
+# reproduce the pre-config behavior of this script. New-in-2.0 elements
+# (activity/agents/todos lines, git dirty/ahead-behind/file-stats markers)
+# therefore default OFF; enable them per key or via "preset": "full".
+# ---------------------------------------------------------------------------
+cfg_language="en"
+cfg_layout="expanded"
+cfg_bar_width=20
+cfg_bar_filled="#"
+cfg_bar_empty="-"
+cfg_path_levels=1
+cfg_max_width=0
+cfg_context_value="both"
+cfg_lines=""
+
+cfg_show_model=1
+cfg_show_repo=1
+cfg_show_branch=1
+cfg_show_worktree=1
+cfg_show_lines_changed=1
+cfg_show_version=1
+cfg_show_git_dirty=0
+cfg_show_git_ahead_behind=0
+cfg_show_git_file_stats=0
+cfg_show_provider=1
+cfg_show_subscription=1
+cfg_show_sessions=1
+cfg_show_balance=1
+cfg_show_context=1
+cfg_show_cost=1
+cfg_show_total_tokens=1
+cfg_show_loc=1
+cfg_show_session_time=1
+cfg_show_thinking_time=1
+cfg_show_cache_ratio=1
+cfg_show_efficiency=1
+cfg_show_tool_calls=1
+cfg_show_activity=0
+cfg_show_agents=0
+cfg_show_todos=0
+
+cfg_push_warning=3
+cfg_push_critical=10
+
+cfg_ctx_warn=70
+cfg_ctx_crit=90
+cfg_5h_warn=70
+cfg_5h_crit=90
+cfg_7d_warn=50
+cfg_7d_crit=75
+
+cfg_color_label=""
+cfg_color_model=""
+cfg_color_repo=""
+cfg_color_branch=""
+cfg_color_muted=""
+cfg_color_accent=""
+cfg_color_bar_filled=""
+cfg_color_bar_empty=""
+
+# Layout presets: lines separated by "|", segments within a line by ",".
+# A custom "lines" array in config.json overrides either preset, which is how
+# element reordering and merging elements onto shared lines is expressed.
+LAYOUT_EXPANDED="model,repo,branch,worktree,lines_changed,version|subscription|sessions,balance|context,cost,total_tokens|loc,session_time,thinking_time|cache_ratio,efficiency|tool_calls|activity|agents|todos"
+LAYOUT_COMPACT="model,repo,branch,worktree,context|subscription,sessions,balance,cost|activity,agents,todos"
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-jqr() { echo "$input" | jq -r "$1" 2>/dev/null; }
 is_num() { [[ "$1" =~ ^-?[0-9]+([.][0-9]+)?$ ]]; }
+
+to_bool() {
+    case "$1" in
+        true|1) echo 1 ;;
+        false|0) echo 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# Named ANSI colors, 256-color numbers, and #RRGGBB hex -> escape sequence.
+# Prints nothing (and fails) for anything unrecognized, so an invalid config
+# value keeps the built-in default instead of emitting garbage bytes.
+resolve_color() {
+    local name="$1"
+    case "$name" in
+        black)   printf '\033[30m' ;;
+        red)     printf '\033[31m' ;;
+        green)   printf '\033[32m' ;;
+        yellow)  printf '\033[33m' ;;
+        blue)    printf '\033[34m' ;;
+        magenta) printf '\033[35m' ;;
+        cyan)    printf '\033[36m' ;;
+        white)   printf '\033[37m' ;;
+        grey|gray) printf '\033[90m' ;;
+        bright-red)     printf '\033[91m' ;;
+        bright-green)   printf '\033[92m' ;;
+        bright-yellow)  printf '\033[93m' ;;
+        bright-blue)    printf '\033[94m' ;;
+        bright-magenta) printf '\033[95m' ;;
+        bright-cyan)    printf '\033[96m' ;;
+        bright-white)   printf '\033[97m' ;;
+        orange) printf '\033[38;5;208m' ;;
+        *)
+            if [[ "$name" =~ ^([0-9]{1,3})$ ]] && [ "$name" -le 255 ]; then
+                printf '\033[38;5;%dm' "$name"
+            elif [[ "$name" =~ ^#[0-9a-fA-F]{6}$ ]]; then
+                printf '\033[38;2;%d;%d;%dm' \
+                    "$(( 16#${name:1:2} ))" "$(( 16#${name:3:2} ))" "$(( 16#${name:5:2} ))"
+            else
+                return 1
+            fi
+            ;;
+    esac
+}
 
 fmt_duration_ms() {
     local ms="$1"
     is_num "$ms" || { echo ""; return; }
     local s=$(( ${ms%.*} / 1000 ))
+    if [ "$s" -ge 3600 ]; then
+        echo "$(( s / 3600 ))h$(( (s % 3600) / 60 ))m"
+    elif [ "$s" -ge 60 ]; then
+        echo "$(( s / 60 ))m$(( s % 60 ))s"
+    else
+        echo "${s}s"
+    fi
+}
+
+# Elapsed seconds -> "2m15s" / "1h5m" / "42s" — used for in-flight agent timers.
+fmt_elapsed_s() {
+    local s="$1"
+    is_num "$s" || { echo ""; return; }
+    s=${s%.*}
+    [ "$s" -lt 0 ] && s=0
     if [ "$s" -ge 3600 ]; then
         echo "$(( s / 3600 ))h$(( (s % 3600) / 60 ))m"
     elif [ "$s" -ge 60 ]; then
@@ -100,20 +227,15 @@ grade_color() {
     esac
 }
 
+# $1 pct, $2 warning threshold, $3 critical threshold
 usage_color() {
-    local u="$1" type="$2"
-    awk -v u="$u" -v t="$type" -v red="$RED" -v orange="$ORANGE" -v green="$GREEN" 'BEGIN{
-        if (u>=100){printf "%s", red; exit}
-        if (t=="7d"){
-            if (u>=75) printf "%s", red;
-            else if (u>=50) printf "%s", orange;
-            else printf "%s", green;
-        } else {
-            if (u>=90) printf "%s", red;
-            else if (u>=70) printf "%s", orange;
-            else printf "%s", green;
-        }
-    }'
+    local u="$1" warn="$2" crit="$3"
+    is_num "$u" || { printf '%s' "$GREY"; return; }
+    u=${u%.*}
+    if [ "$u" -ge 100 ] || [ "$u" -ge "$crit" ]; then printf '%s' "$RED"
+    elif [ "$u" -ge "$warn" ]; then printf '%s' "$ORANGE"
+    else printf '%s' "$GREEN"
+    fi
 }
 
 # HH:MM only — used for the 5-hour reset, since it always falls within the same day.
@@ -191,19 +313,58 @@ add_months_epoch() {
     parse_subscription_date "$(printf '%02d/%02d/%04d' "$day" "$target_month" "$target_year")"
 }
 
+# Uncolored glyph bar. Glyphs are configurable (e.g. █/░); built by loop, not
+# `tr`, because tr is byte-oriented and mangles multi-byte glyphs.
 make_bar() {
     local pct="$1" width="${2:-20}"
     is_num "$pct" || pct=0
+    pct=${pct%.*}
     [ "$pct" -lt 0 ] && pct=0
     [ "$pct" -gt 100 ] && pct=100
     local filled=$(( pct * width / 100 ))
     [ "$filled" -gt "$width" ] && filled=$width
-    local empty=$(( width - filled ))
-    printf "%${filled}s" | tr ' ' '#'
-    printf "%${empty}s" | tr ' ' '-'
+    local empty=$(( width - filled )) out="" i
+    for (( i = 0; i < filled; i++ )); do out+="$cfg_bar_filled"; done
+    for (( i = 0; i < empty; i++ )); do out+="$cfg_bar_empty"; done
+    printf '%s' "$out"
 }
 
-BAR_WIDTH=20
+# Colored "[bar]" unit: $1 pct, $2 outer/usage color. Per-part color overrides
+# only add escape sequences when actually configured, so the default output
+# stays byte-identical to the pre-config format.
+render_bar() {
+    local pct="$1" outer="$2"
+    is_num "$pct" || pct=0
+    pct=${pct%.*}
+    [ "$pct" -lt 0 ] && pct=0
+    local p="$pct"
+    [ "$p" -gt 100 ] && p=100
+    local nf=$(( p * cfg_bar_width / 100 ))
+    [ "$nf" -gt "$cfg_bar_width" ] && nf=$cfg_bar_width
+    local ne=$(( cfg_bar_width - nf )) fstr="" estr="" i
+    for (( i = 0; i < nf; i++ )); do fstr+="$cfg_bar_filled"; done
+    for (( i = 0; i < ne; i++ )); do estr+="$cfg_bar_empty"; done
+    if [ -z "$C_BAR_FILLED" ] && [ -z "$C_BAR_EMPTY" ]; then
+        printf '%s' "${outer}[${fstr}${estr}]${RESET}"
+    else
+        printf '%s' "${outer}[${C_BAR_FILLED:-$outer}${fstr}${C_BAR_EMPTY:-$outer}${estr}${RESET}${outer}]${RESET}"
+    fi
+}
+
+# Last $2 components of path $1, joined by "/" — pathLevels support.
+path_tail() {
+    local p="${1%/}" n="$2" out="" i
+    local parts=() IFS='/'
+    read -ra parts <<< "$p"
+    local cnt=${#parts[@]}
+    local start=$(( cnt - n ))
+    [ "$start" -lt 0 ] && start=0
+    for (( i = start; i < cnt; i++ )); do
+        [ -n "${parts[i]}" ] || continue
+        out+="${out:+/}${parts[i]}"
+    done
+    printf '%s' "$out"
+}
 
 # Lines added/removed for one repo relative to a ref, printed as "added removed":
 # tracked-file diff via --numstat (staged + unstaged + commits made after the
@@ -227,29 +388,263 @@ measure_repo_line_changes() {
     echo "$added $removed"
 }
 
+file_mtime() {
+    stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0
+}
+
 # ---------------------------------------------------------------------------
-# Identity
+# Everything below is the render flow; sourcing the script (tests) stops here
+# so the pure functions above are unit-testable without stdin or side effects.
 # ---------------------------------------------------------------------------
-model=$(jqr '.model.display_name // empty')
-project=$(jqr '.workspace.project_dir | select(. != null) | split("/") | last')
-project_dir=$(jqr '.workspace.project_dir // empty')
-cwd=$(jqr '.cwd // empty')
-[ -z "$cwd" ] && cwd=$(jqr '.workspace.current_dir // empty')
+if [[ "${BASH_SOURCE[0]}" != "${0}" ]]; then
+    return 0
+fi
+
+# Kill switch — stdin is still drained so the writer never sees a broken pipe.
+if [ "${SUPER_STATUS_DISABLE:-0}" = "1" ]; then
+    cat > /dev/null
+    exit 0
+fi
+
+input=$(cat)
+
+# ---------------------------------------------------------------------------
+# Private per-user cache root (XDG). /tmp is world-readable and its predictable
+# paths are pre-creatable by other local users, so caches live here instead.
+# ---------------------------------------------------------------------------
+CACHE_ROOT="${XDG_CACHE_HOME:-$HOME/.cache}/super-status"
+if [ ! -d "$CACHE_ROOT" ]; then
+    mkdir -p "$CACHE_ROOT" 2>/dev/null
+    chmod 700 "$CACHE_ROOT" 2>/dev/null
+fi
+
+# ---------------------------------------------------------------------------
+# Config load — one jq call over config.json emits key<TAB>value rows for a
+# fixed key set; unknown keys are ignored, absent keys keep their defaults.
+# "preset" is emitted first so explicit per-key values always override it.
+# ---------------------------------------------------------------------------
+CONFIG_FILE="${SUPER_STATUS_CONFIG:-$HOME/.claude/super-status/config.json}"
+config_warning_line=""
+
+apply_preset() {
+    local _v
+    case "$1" in
+        full)
+            for _v in git_dirty git_ahead_behind git_file_stats activity agents todos; do
+                printf -v "cfg_show_${_v}" '%s' 1
+            done
+            ;;
+        essential)
+            for _v in lines_changed version git_file_stats total_tokens loc session_time \
+                      thinking_time cache_ratio efficiency tool_calls activity; do
+                printf -v "cfg_show_${_v}" '%s' 0
+            done
+            for _v in git_dirty git_ahead_behind agents todos; do
+                printf -v "cfg_show_${_v}" '%s' 1
+            done
+            ;;
+        minimal)
+            for _v in repo worktree lines_changed version git_dirty git_ahead_behind \
+                      git_file_stats provider subscription cost total_tokens loc \
+                      session_time thinking_time cache_ratio efficiency tool_calls \
+                      activity agents todos; do
+                printf -v "cfg_show_${_v}" '%s' 0
+            done
+            cfg_layout="compact"
+            ;;
+    esac
+}
+
+if [ -f "$CONFIG_FILE" ]; then
+    if ! _cfg_out=$(jq -r '
+        def s(v): if v == null then "" else (v | tostring) end;
+        (
+          [
+            ["preset", s(.preset)],
+            ["language", s(.language)],
+            ["layout", s(.layout)],
+            ["bar_width", s(.bar_width)],
+            ["bar_filled", s(.bar_filled)],
+            ["bar_empty", s(.bar_empty)],
+            ["path_levels", s(.path_levels)],
+            ["max_width", s(.max_width)],
+            ["context_value", s(.context_value)],
+            ["lines", (try (.lines | map(join(",")) | join("|")) catch "")],
+            ["push_warning_threshold", s(.git.push_warning_threshold)],
+            ["push_critical_threshold", s(.git.push_critical_threshold)]
+          ]
+          + ((.display // {}) | to_entries | map(["display_" + .key, s(.value)]))
+          + ((.colors // {}) | to_entries | map(["color_" + .key, s(.value)]))
+          + ((.thresholds // {}) | to_entries | map(["threshold_" + .key, s(.value)]))
+        ) | .[] | @tsv' "$CONFIG_FILE" 2>/dev/null); then
+        config_warning_line="${BOLD_RED}SUPER-STATUS CONFIG IS INVALID JSON - USING DEFAULTS: ${CONFIG_FILE}${RESET}"
+    else
+        while IFS=$'\t' read -r _k _v; do
+            [ -n "$_k" ] || continue
+            case "$_k" in
+                preset) [ -n "$_v" ] && apply_preset "$_v" ;;
+                language) [ -n "$_v" ] && cfg_language="$_v" ;;
+                layout) case "$_v" in expanded|compact) cfg_layout="$_v" ;; esac ;;
+                bar_width) is_num "$_v" && [ "${_v%.*}" -ge 5 ] && [ "${_v%.*}" -le 60 ] && cfg_bar_width="${_v%.*}" ;;
+                bar_filled) [ -n "$_v" ] && cfg_bar_filled="${_v:0:1}" ;;
+                bar_empty) [ -n "$_v" ] && cfg_bar_empty="${_v:0:1}" ;;
+                path_levels) is_num "$_v" && [ "${_v%.*}" -ge 1 ] && [ "${_v%.*}" -le 5 ] && cfg_path_levels="${_v%.*}" ;;
+                max_width) is_num "$_v" && [ "${_v%.*}" -ge 0 ] && cfg_max_width="${_v%.*}" ;;
+                context_value) case "$_v" in percent|tokens|remaining|both) cfg_context_value="$_v" ;; esac ;;
+                lines) [ -n "$_v" ] && cfg_lines="$_v" ;;
+                push_warning_threshold) is_num "$_v" && cfg_push_warning="${_v%.*}" ;;
+                push_critical_threshold) is_num "$_v" && cfg_push_critical="${_v%.*}" ;;
+                display_*)
+                    _b=$(to_bool "$_v") || continue
+                    case "${_k#display_}" in
+                        model|repo|branch|worktree|lines_changed|version|git_dirty|git_ahead_behind|git_file_stats|provider|subscription|sessions|balance|context|cost|total_tokens|loc|session_time|thinking_time|cache_ratio|efficiency|tool_calls|activity|agents|todos)
+                            printf -v "cfg_show_${_k#display_}" '%s' "$_b" ;;
+                    esac
+                    ;;
+                color_*)
+                    case "${_k#color_}" in
+                        label|model|repo|branch|muted|accent|bar_filled|bar_empty)
+                            printf -v "cfg_color_${_k#color_}" '%s' "$_v" ;;
+                    esac
+                    ;;
+                threshold_*)
+                    is_num "$_v" || continue
+                    case "${_k#threshold_}" in
+                        context_warning) cfg_ctx_warn="${_v%.*}" ;;
+                        context_critical) cfg_ctx_crit="${_v%.*}" ;;
+                        five_hour_warning) cfg_5h_warn="${_v%.*}" ;;
+                        five_hour_critical) cfg_5h_crit="${_v%.*}" ;;
+                        seven_day_warning) cfg_7d_warn="${_v%.*}" ;;
+                        seven_day_critical) cfg_7d_crit="${_v%.*}" ;;
+                    esac
+                    ;;
+            esac
+        done <<< "$_cfg_out"
+    fi
+fi
+
+# Element colors: built-in defaults, overridable per element from config.
+C_LABEL="$WHITE"; C_MODEL="$CYAN"; C_REPO="$GREEN"; C_BRANCH="$MAGENTA"
+C_MUTED="$GREY"; C_ACCENT="$YELLOW"; C_BAR_FILLED=""; C_BAR_EMPTY=""
+_c=$(resolve_color "$cfg_color_label") && C_LABEL="$_c"
+_c=$(resolve_color "$cfg_color_model") && C_MODEL="$_c"
+_c=$(resolve_color "$cfg_color_repo") && C_REPO="$_c"
+_c=$(resolve_color "$cfg_color_branch") && C_BRANCH="$_c"
+_c=$(resolve_color "$cfg_color_muted") && C_MUTED="$_c"
+_c=$(resolve_color "$cfg_color_accent") && C_ACCENT="$_c"
+_c=$(resolve_color "$cfg_color_bar_filled") && C_BAR_FILLED="$_c"
+_c=$(resolve_color "$cfg_color_bar_empty") && C_BAR_EMPTY="$_c"
+
+# ---------------------------------------------------------------------------
+# Labels — every rendered string lives here, keyed by the "language" config
+# value. Only "en" ships today; adding a language means adding one case branch.
+# ---------------------------------------------------------------------------
+case "$cfg_language" in
+    en|*)
+        L_MODEL="Model:"
+        L_REPO="Repo:"
+        L_BRANCH="Branch:"
+        L_WORKTREE="Worktree:"
+        L_LINES_CHANGED="Lines Changes:"
+        L_VERSION="Claude Version:"
+        L_SUBSCRIPTION="Subscription:"
+        L_SESSIONS="Sessions:"
+        L_BALANCE="Balance:"
+        L_CONTEXT="Context:"
+        L_COST="Cost:"
+        L_COST_EST="Cost (est.):"
+        L_TOTAL_TOKENS="Total Tokens:"
+        L_LOC="Lines of code in project:"
+        L_SESSION_TIME="Total Session Time:"
+        L_THINKING="Total thinking time:"
+        L_CACHE_RATIO="Cache Vs Tokens:"
+        L_EFFICIENCY="Efficiency Grade (A–F):"
+        L_TOOL_CALLS="Tool Calls"
+        L_ACTIVITY="Activity:"
+        L_AGENTS="Agents:"
+        L_TODO="Todo:"
+        L_RESET="Reset:"
+        L_LEFT="left"
+        L_USED="used"
+        L_SUB_MISSING='SUBSCRIPTION START DATE IS MISSING - ADD IT TO THE CLAUDE.MD: "subscription_start_date": "dd/MM/yyyy"'
+        L_SUB_INVALID='SUBSCRIPTION START DATE IS INVALID - ADD IT TO THE CLAUDE.MD: "subscription_start_date": "dd/MM/yyyy"'
+        ;;
+esac
+
+# ---------------------------------------------------------------------------
+# Single-pass stdin parse — one jq call emits every needed field as
+# key<TAB>value (replacing ~25 per-field jq spawns). @tsv escapes embedded
+# tabs/newlines so the read loop can never be desynced by data.
+# ---------------------------------------------------------------------------
+model=""; project_dir=""; cwd=""; current_dir=""; worktree=""
+session_id=""; transcript_path=""; cc_version=""
+sv_used_pct=""; sv_remaining_pct=""; sv_window_size=""
+sv_cur_in=""; sv_cur_cc=""; sv_cur_cr=""
+api_ms=""; dur_ms=""; cost_usd=""; lines_added=""; lines_removed=""
+five_util_probe=""; five_reset=""; seven_util_probe=""; seven_reset=""
+
+while IFS=$'\t' read -r _k _v; do
+    case "$_k" in
+        model) model="$_v" ;;
+        project_dir) project_dir="$_v" ;;
+        cwd) cwd="$_v" ;;
+        current_dir) current_dir="$_v" ;;
+        worktree) worktree="$_v" ;;
+        session_id) session_id="$_v" ;;
+        transcript_path) transcript_path="$_v" ;;
+        version) cc_version="$_v" ;;
+        used_pct) sv_used_pct="$_v" ;;
+        remaining_pct) sv_remaining_pct="$_v" ;;
+        window_size) sv_window_size="$_v" ;;
+        cur_in) sv_cur_in="$_v" ;;
+        cur_cc) sv_cur_cc="$_v" ;;
+        cur_cr) sv_cur_cr="$_v" ;;
+        api_ms) api_ms="$_v" ;;
+        dur_ms) dur_ms="$_v" ;;
+        cost_usd) cost_usd="$_v" ;;
+        cost_la) lines_added="$_v" ;;
+        cost_lr) lines_removed="$_v" ;;
+        five_pct) five_util_probe="$_v" ;;
+        five_reset) five_reset="$_v" ;;
+        seven_pct) seven_util_probe="$_v" ;;
+        seven_reset) seven_reset="$_v" ;;
+    esac
+done <<< "$(jq -r '
+    def s(v): if v == null then "" else (v | tostring) end;
+    [
+      ["model", s(.model.display_name)],
+      ["project_dir", s(.workspace.project_dir)],
+      ["cwd", s(.cwd)],
+      ["current_dir", s(.workspace.current_dir)],
+      ["worktree", s(.workspace.git_worktree)],
+      ["session_id", s(.session_id)],
+      ["transcript_path", s(.transcript_path)],
+      ["version", s(.version)],
+      ["used_pct", s(.context_window.used_percentage)],
+      ["remaining_pct", s(.context_window.remaining_percentage)],
+      ["window_size", s(.context_window.context_window_size)],
+      ["cur_in", s(.context_window.current_usage.input_tokens)],
+      ["cur_cc", s(.context_window.current_usage.cache_creation_input_tokens)],
+      ["cur_cr", s(.context_window.current_usage.cache_read_input_tokens)],
+      ["api_ms", s(.cost.total_api_duration_ms)],
+      ["dur_ms", s(.cost.total_duration_ms)],
+      ["cost_usd", s(.cost.total_cost_usd)],
+      ["cost_la", s(.cost.total_lines_added)],
+      ["cost_lr", s(.cost.total_lines_removed)],
+      ["five_pct", s(.rate_limits.five_hour.used_percentage)],
+      ["five_reset", s(.rate_limits.five_hour.resets_at)],
+      ["seven_pct", s(.rate_limits.seven_day.used_percentage)],
+      ["seven_reset", s(.rate_limits.seven_day.resets_at)]
+    ] | .[] | @tsv' <<< "$input" 2>/dev/null)"
+
+[ "$worktree" = "null" ] && worktree=""
+[ -z "$cwd" ] && cwd="$current_dir"
+
 git_root=$(git -C "${cwd:-$project_dir}" rev-parse --show-toplevel 2>/dev/null)
 [ -z "$git_root" ] && git_root="${cwd:-$project_dir}"
 git_branch=""
 [ -n "$git_root" ] && [ -d "$git_root" ] && \
     git_branch=$(GIT_OPTIONAL_LOCKS=0 git -C "$git_root" rev-parse --abbrev-ref HEAD 2>/dev/null)
-worktree=$(jqr '.workspace.git_worktree // empty')
-[ "$worktree" = "null" ] && worktree=""
-
-# Session/transcript identifiers — must be resolved before every consumer:
-# the cumulative token totals, workspace line changes, and Tool Calls
-# sections all key their caches off these. (These previously
-# lived below the token-totals section, which silently killed the Tokens:
-# field — transcript_path was always empty when that block ran.)
-session_id=$(jqr '.session_id // empty')
-transcript_path=$(jqr '.transcript_path // empty')
 
 # ---------------------------------------------------------------------------
 # Backend detection
@@ -263,19 +658,40 @@ case "$ANTHROPIC_BASE_URL" in
     *openrouter.ai*) IS_OPENROUTER=1 ;;
 esac
 
+IS_SUBSCRIPTION=0
+is_num "$five_util_probe" && is_num "$seven_util_probe" && IS_SUBSCRIPTION=1
+
+# Provider badge on the model segment — first-party Anthropic shows nothing;
+# any other backend is named explicitly so the backend mode is visible at a glance.
+provider_badge=""
+if [ "$cfg_show_provider" = "1" ]; then
+    if [ "$IS_OPENROUTER" -eq 1 ]; then
+        provider_badge="OpenRouter"
+    elif [ -n "$ANTHROPIC_BASE_URL" ]; then
+        case "$ANTHROPIC_BASE_URL" in
+            *api.anthropic.com*) ;;
+            *z.ai*|*bigmodel*) provider_badge="z.ai" ;;
+            *)
+                _pb="${ANTHROPIC_BASE_URL#*://}"
+                provider_badge="${_pb%%/*}"
+                ;;
+        esac
+    fi
+fi
+
 # ---------------------------------------------------------------------------
 # LOC count (60s cache per git root)
 # ---------------------------------------------------------------------------
 loc_value=""
-if [ -n "$git_root" ] && [ -d "$git_root" ] && command -v tokei >/dev/null 2>&1; then
-    _loc_dir="/tmp/super-status/loc-cache"
+if [ "$cfg_show_loc" = "1" ] && [ -n "$git_root" ] && [ -d "$git_root" ] && command -v tokei >/dev/null 2>&1; then
+    _loc_dir="$CACHE_ROOT/loc-cache"
     mkdir -p "$_loc_dir"
     _key=$(echo "$git_root" | tr '/' '_')
     _loc_file="$_loc_dir/${_key}.txt"
     _loc_stamp="$_loc_dir/${_key}.stamp"
     _do_count=1
     if [ -f "$_loc_stamp" ]; then
-        _age=$(( $(date +%s) - $(stat -c %Y "$_loc_stamp" 2>/dev/null || stat -f %m "$_loc_stamp" 2>/dev/null || echo 0) ))
+        _age=$(( $(date +%s) - $(file_mtime "$_loc_stamp") ))
         [ "$_age" -lt 60 ] && _do_count=0
     fi
     if [ "$_do_count" -eq 1 ]; then
@@ -311,15 +727,15 @@ fi
 # productivity — not the whole workspace.
 ws_added=""; ws_removed=""
 ws_root="${project_dir:-${cwd:-$git_root}}"
-if [ -n "$ws_root" ] && [ -d "$ws_root" ] && command -v git >/dev/null 2>&1; then
-    _ws_dir="/tmp/super-status/workspace-diff-cache"
+if [ "$cfg_show_lines_changed" = "1" ] && [ -n "$ws_root" ] && [ -d "$ws_root" ] && command -v git >/dev/null 2>&1; then
+    _ws_dir="$CACHE_ROOT/workspace-diff-cache"
     mkdir -p "$_ws_dir"
     _ws_key="${session_id:-$(echo "$ws_root" | tr '/' '_')}"
     _ws_file="$_ws_dir/${_ws_key}.txt"
     _ws_stamp="$_ws_dir/${_ws_key}.stamp"
     _ws_do_count=1
     if [ -f "$_ws_stamp" ]; then
-        _ws_age=$(( $(date +%s) - $(stat -c %Y "$_ws_stamp" 2>/dev/null || stat -f %m "$_ws_stamp" 2>/dev/null || echo 0) ))
+        _ws_age=$(( $(date +%s) - $(file_mtime "$_ws_stamp") ))
         [ "$_ws_age" -lt 10 ] && _ws_do_count=0
     fi
     if [ "$_ws_do_count" -eq 1 ]; then
@@ -364,73 +780,187 @@ if [ -n "$ws_root" ] && [ -d "$ws_root" ] && command -v git >/dev/null 2>&1; the
         touch "$_ws_stamp"
     fi
     read -r ws_added ws_removed < "$_ws_file" 2>/dev/null
-    is_num "$ws_added" && is_num "$ws_removed" || { ws_added=""; ws_removed=""; }
+    if ! is_num "$ws_added" || ! is_num "$ws_removed"; then ws_added=""; ws_removed=""; fi
+fi
+
+# ---------------------------------------------------------------------------
+# Git status enrichment (10s cache per git root): dirty marker, ahead/behind
+# vs. upstream, and modified/staged/untracked file counts.
+# ---------------------------------------------------------------------------
+git_dirty=""; git_ahead=""; git_behind=""
+git_staged=""; git_modified=""; git_untracked=""
+if [ -n "$git_branch" ] && { [ "$cfg_show_git_dirty" = "1" ] || [ "$cfg_show_git_ahead_behind" = "1" ] || [ "$cfg_show_git_file_stats" = "1" ]; }; then
+    _gs_dir="$CACHE_ROOT/gitstatus-cache"
+    mkdir -p "$_gs_dir"
+    _gs_key=$(echo "$git_root" | tr '/' '_')
+    _gs_file="$_gs_dir/${_gs_key}.txt"
+    _gs_stamp="$_gs_dir/${_gs_key}.stamp"
+    _gs_do=1
+    if [ -f "$_gs_stamp" ]; then
+        _gs_age=$(( $(date +%s) - $(file_mtime "$_gs_stamp") ))
+        [ "$_gs_age" -lt 10 ] && _gs_do=0
+    fi
+    if [ "$_gs_do" -eq 1 ]; then
+        _d=0; _st=0; _mo=0; _un=0; _ah=""; _bh=""
+        if [ "$cfg_show_git_file_stats" = "1" ]; then
+            while IFS= read -r _pline; do
+                [ -n "$_pline" ] || continue
+                _d=1
+                case "${_pline:0:2}" in
+                    '??') _un=$(( _un + 1 )) ;;
+                    *)
+                        case "${_pline:0:1}" in [MADRC]) _st=$(( _st + 1 )) ;; esac
+                        case "${_pline:1:1}" in [MD]) _mo=$(( _mo + 1 )) ;; esac
+                        ;;
+                esac
+            done < <(GIT_OPTIONAL_LOCKS=0 git -C "$git_root" status --porcelain 2>/dev/null)
+        else
+            # First line only — a dirty/clean answer doesn't need the full listing.
+            _first=$(GIT_OPTIONAL_LOCKS=0 git -C "$git_root" status --porcelain 2>/dev/null | head -n 1)
+            [ -n "$_first" ] && _d=1
+        fi
+        if [ "$cfg_show_git_ahead_behind" = "1" ]; then
+            read -r _bh _ah <<< "$(GIT_OPTIONAL_LOCKS=0 git -C "$git_root" rev-list --left-right --count '@{upstream}...HEAD' 2>/dev/null)"
+        fi
+        echo "$_d ${_ah:--} ${_bh:--} $_st $_mo $_un" > "$_gs_file"
+        touch "$_gs_stamp"
+    fi
+    read -r git_dirty git_ahead git_behind git_staged git_modified git_untracked < "$_gs_file" 2>/dev/null
+    [ "$git_ahead" = "-" ] && git_ahead=""
+    [ "$git_behind" = "-" ] && git_behind=""
 fi
 
 # ---------------------------------------------------------------------------
 # Context window % + bar + tokens
 # ---------------------------------------------------------------------------
-pct=$(jqr '.context_window.used_percentage // empty')
+pct="$sv_used_pct"
+window_size="$sv_window_size"
+is_num "$window_size" || window_size=200000
+token_input="${sv_cur_in:-0}"; is_num "$token_input" || token_input=0
+token_cc="${sv_cur_cc:-0}"; is_num "$token_cc" || token_cc=0
+token_cr="${sv_cur_cr:-0}"; is_num "$token_cr" || token_cr=0
+token_total=$(( ${token_input%.*} + ${token_cc%.*} + ${token_cr%.*} ))
 if ! is_num "$pct"; then
-    window_size=$(jqr '.context_window.context_window_size // 200000')
-    it=$(jqr '.context_window.current_usage.input_tokens // 0')
-    cc=$(jqr '.context_window.current_usage.cache_creation_input_tokens // 0')
-    cr=$(jqr '.context_window.current_usage.cache_read_input_tokens // 0')
-    is_num "$window_size" || window_size=200000
-    total=$(( ${it:-0} + ${cc:-0} + ${cr:-0} ))
-    pct=$(( window_size > 0 ? total * 100 / window_size : 0 ))
+    pct=$(( window_size > 0 ? token_total * 100 / window_size : 0 ))
 fi
 pct=${pct%.*}
 is_num "$pct" || pct=0
 [ "$pct" -lt 0 ] && pct=0
 [ "$pct" -gt 100 ] && pct=100
-ctx_bar=$(make_bar "$pct" "$BAR_WIDTH")
-if [ "$pct" -ge 90 ]; then pct_color="$RED"
-elif [ "$pct" -ge 70 ]; then pct_color="$ORANGE"
-else pct_color="$GREEN"
-fi
+pct_color=$(usage_color "$pct" "$cfg_ctx_warn" "$cfg_ctx_crit")
 
-token_input=$(jqr '.context_window.current_usage.input_tokens // 0')
-token_cc=$(jqr '.context_window.current_usage.cache_creation_input_tokens // 0')
-token_cr=$(jqr '.context_window.current_usage.cache_read_input_tokens // 0')
-token_max=$(jqr '.context_window.context_window_size // 200000')
-is_num "$token_max" || token_max=200000
-token_total=$(( ${token_input:-0} + ${token_cc:-0} + ${token_cr:-0} ))
 token_used_k=$(( token_total / 1000 ))
-token_max_k=$(( token_max / 1000 ))
+token_max_k=$(( window_size / 1000 ))
 
-# Cumulative session totals (separate from the current-context numbers above,
-# which reset after /compact — these keep growing for the whole session).
+# Remaining tokens before auto-compact: Claude Code's own remaining_percentage
+# is preferred when present (it accounts for the auto-compact threshold, so
+# the raw window size isn't assumed to be the usable budget); otherwise it
+# falls back to window minus used.
+remaining_tokens=""
+if is_num "$sv_remaining_pct"; then
+    remaining_tokens=$(awk "BEGIN{printf \"%d\", $window_size * $sv_remaining_pct / 100}")
+else
+    remaining_tokens=$(( window_size - token_total ))
+fi
+[ "$remaining_tokens" -lt 0 ] && remaining_tokens=0
+remaining_k=$(( remaining_tokens / 1000 ))
+
+# ---------------------------------------------------------------------------
+# Shared transcript pass — ONE python3 run (cached by transcript mtime) feeds
+# five consumers: cumulative token totals, the six tool-call buckets, the
+# live activity groups, in-flight subagents, and the latest todo state.
 #
-# NOTE: neither total_input_tokens nor total_output_tokens is trusted
-# straight from Claude Code's own JSON. total_output_tokens reflects only
-# the last exchange's output, not a running total, so trusting it directly
-# makes the "out" number visibly drop turn to turn instead of accumulating.
-# total_input_tokens is also unreliable early on — it (like rate_limits)
-# stays null/absent until Claude Code has completed at least one real API
-# call in the session. Instead we derive BOTH ourselves by summing every
-# assistant message's usage fields out of the transcript JSONL — input
-# tokens as input_tokens + cache_creation_input_tokens + cache_read_input_tokens
-# (mirroring how the current-context total on line 3 is built), output
-# tokens as output_tokens — cached together by mtime like the other
-# transcript-derived fields below.
-session_total_input=""
-session_total_output=""
-if [ -n "$transcript_path" ] && [ -f "$transcript_path" ]; then
-    _sto_dir="/tmp/super-status/tokentotals-cache"
-    mkdir -p "$_sto_dir"
-    _sto_key="${session_id:-$(echo "$transcript_path" | tr '/' '_')}"
-    _sto_file="$_sto_dir/${_sto_key}.txt"
-    _sto_stamp="$_sto_dir/${_sto_key}.mtime"
-    _sto_src_mtime=$(stat -c %Y "$transcript_path" 2>/dev/null || stat -f %m "$transcript_path" 2>/dev/null || echo 0)
-    _sto_cached_mtime=$(cat "$_sto_stamp" 2>/dev/null || echo -1)
-    if [ "$_sto_src_mtime" != "$_sto_cached_mtime" ]; then
-        _sto_value=$(python3 -c "
-import json, sys
+# Token totals: neither total_input_tokens nor total_output_tokens is trusted
+# straight from Claude Code's own JSON. total_output_tokens reflects only the
+# last exchange's output, not a running total, and total_input_tokens stays
+# null/absent until the first real API call — so both are derived by summing
+# every assistant message's usage fields out of the transcript JSONL.
+#
+# Buckets: every tool_use block maps into exactly one of six semantic buckets
+# (Skills / Code / Commands / Read / MCP Call / Other) so the bucket sum always
+# equals the printed total by construction. The Code bucket doubles as the
+# Efficiency Grade denominator.
+#
+# In-flight detection: a tool_use whose id has no matching tool_result yet is
+# "running" — that's what marks the activity spinner and live agents.
+# ---------------------------------------------------------------------------
+session_total_input=""; session_total_output=""
+tool_calls_total=""
+bucket_skills=""; bucket_code=""; bucket_commands=""
+bucket_read=""; bucket_mcp=""; bucket_other=""
+activity_value=""
+agents_value=""
+todo_value=""
+
+_need_transcript=0
+for _flag in "$cfg_show_total_tokens" "$cfg_show_tool_calls" "$cfg_show_efficiency" \
+             "$cfg_show_activity" "$cfg_show_agents" "$cfg_show_todos"; do
+    [ "$_flag" = "1" ] && _need_transcript=1
+done
+
+if [ "$_need_transcript" -eq 1 ] && [ -n "$transcript_path" ] && [ -f "$transcript_path" ]; then
+    _tr_dir="$CACHE_ROOT/transcript-cache"
+    mkdir -p "$_tr_dir"
+    _tr_key="${session_id:-$(echo "$transcript_path" | tr '/' '_')}"
+    _tr_file="$_tr_dir/${_tr_key}.txt"
+    _tr_stamp="$_tr_dir/${_tr_key}.mtime"
+    _tr_src_mtime=$(file_mtime "$transcript_path")
+    _tr_cached_mtime=$(cat "$_tr_stamp" 2>/dev/null || echo -1)
+    if [ "$_tr_src_mtime" != "$_tr_cached_mtime" ]; then
+        _tr_value=$(python3 - "$transcript_path" 2>/dev/null <<'PYEOF'
+import json
+import os
+import sys
+from datetime import datetime
 
 path = sys.argv[1]
 total_in = 0
 total_out = 0
+buckets = {'SKILLS': 0, 'CODE': 0, 'COMMANDS': 0, 'READ': 0, 'MCP': 0, 'OTHER': 0}
+code_tools = {'edit', 'write', 'multiedit', 'notebookedit'}
+read_tools = {'read', 'glob', 'grep', 'ls'}
+agent_tools = {'task', 'agent'}
+
+tools = []
+tools_by_id = {}
+latest_todos = None
+
+
+def clean(text, limit):
+    if not isinstance(text, str):
+        return ''
+    return text.replace('\t', ' ').replace('\n', ' ').strip()[:limit]
+
+
+def to_epoch(timestamp):
+    if not isinstance(timestamp, str):
+        return ''
+    try:
+        return str(int(datetime.fromisoformat(timestamp.replace('Z', '+00:00')).timestamp()))
+    except Exception:
+        return ''
+
+
+def target_for(name, tool_input):
+    if not isinstance(tool_input, dict):
+        return ''
+    low = name.lower()
+    file_path = tool_input.get('file_path') or tool_input.get('path') or tool_input.get('notebook_path')
+    if isinstance(file_path, str) and file_path:
+        return os.path.basename(file_path)
+    if low == 'bash':
+        command = tool_input.get('command')
+        if isinstance(command, str) and command.strip():
+            return command.strip().split()[0].rsplit('/', 1)[-1]
+    if low in ('grep', 'glob'):
+        return clean(tool_input.get('pattern'), 20)
+    if low == 'skill':
+        return clean(tool_input.get('skill'), 30)
+    if low == 'webfetch' or low == 'websearch':
+        return clean(tool_input.get('url') or tool_input.get('query'), 30)
+    return ''
+
+
 try:
     with open(path, 'r') as f:
         for line in f:
@@ -442,60 +972,180 @@ try:
             except Exception:
                 continue
             msg = obj.get('message') or {}
-            if msg.get('role') != 'assistant':
+            role = msg.get('role')
+            content = msg.get('content')
+            if role == 'assistant':
+                usage = msg.get('usage') or {}
+                for key in ('input_tokens', 'cache_creation_input_tokens', 'cache_read_input_tokens'):
+                    value = usage.get(key)
+                    if isinstance(value, (int, float)):
+                        total_in += value
+                out = usage.get('output_tokens')
+                if isinstance(out, (int, float)):
+                    total_out += out
+            if not isinstance(content, list):
                 continue
-            usage = msg.get('usage') or {}
-            inp = usage.get('input_tokens')
-            cc = usage.get('cache_creation_input_tokens')
-            cr = usage.get('cache_read_input_tokens')
-            out = usage.get('output_tokens')
-            if isinstance(inp, (int, float)):
-                total_in += inp
-            if isinstance(cc, (int, float)):
-                total_in += cc
-            if isinstance(cr, (int, float)):
-                total_in += cr
-            if isinstance(out, (int, float)):
-                total_out += out
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                btype = block.get('type')
+                if btype == 'tool_use' and role == 'assistant':
+                    name = block.get('name') or ''
+                    low = name.lower()
+                    if name.startswith('mcp__'):
+                        buckets['MCP'] += 1
+                    elif low == 'skill':
+                        buckets['SKILLS'] += 1
+                    elif low in code_tools:
+                        buckets['CODE'] += 1
+                    elif low == 'bash':
+                        buckets['COMMANDS'] += 1
+                    elif low in read_tools:
+                        buckets['READ'] += 1
+                    else:
+                        buckets['OTHER'] += 1
+                    tool_input = block.get('input')
+                    entry = {
+                        'id': block.get('id'),
+                        'name': name,
+                        'low': low,
+                        'done': False,
+                        'epoch': to_epoch(obj.get('timestamp')),
+                        'target': clean(target_for(name, tool_input), 30),
+                    }
+                    if low in agent_tools and isinstance(tool_input, dict):
+                        entry['agent'] = True
+                        entry['desc'] = clean(tool_input.get('description') or tool_input.get('prompt'), 50)
+                        entry['atype'] = clean(tool_input.get('subagent_type'), 30) or 'agent'
+                        entry['amodel'] = clean(tool_input.get('model'), 20)
+                    if low == 'todowrite' and isinstance(tool_input, dict):
+                        todos = tool_input.get('todos')
+                        if isinstance(todos, list):
+                            latest_todos = todos
+                    tools.append(entry)
+                    if entry['id']:
+                        tools_by_id[entry['id']] = entry
+                elif btype == 'tool_result':
+                    tool_id = block.get('tool_use_id')
+                    if tool_id in tools_by_id:
+                        tools_by_id[tool_id]['done'] = True
 except Exception:
     pass
-print(f'{int(total_in)} {int(total_out)}')
-" "$transcript_path" 2>/dev/null)
-        echo "${_sto_value:-0 0}" > "$_sto_file"
-        echo "$_sto_src_mtime" > "$_sto_stamp"
+
+print(f'TOKENS\t{int(total_in)}\t{int(total_out)}')
+print(f'BUCKET\tTOTAL\t{sum(buckets.values())}')
+for key, count in buckets.items():
+    print(f'BUCKET\t{key}\t{count}')
+
+# Activity groups: newest first, consecutive completed calls of the same tool
+# collapsed into one "×N" group. Agents and TodoWrite have their own lines.
+groups = []
+for entry in reversed(tools):
+    if entry.get('agent') or entry['low'] == 'todowrite':
+        continue
+    status = 'done' if entry['done'] else 'run'
+    if groups and status == 'done' and groups[-1]['status'] == 'done' and groups[-1]['name'] == entry['name']:
+        groups[-1]['count'] += 1
+        continue
+    if len(groups) >= 5:
+        break
+    groups.append({'name': entry['name'], 'status': status, 'count': 1, 'target': entry['target']})
+for group in groups:
+    target = group['target'] if group['count'] == 1 else ''
+    print(f"ACT\t{group['status']}\t{group['count']}\t{group['name']}\t{target}")
+
+for entry in tools:
+    if entry.get('agent') and not entry['done']:
+        print(f"AGENT\t{entry['epoch']}\t{entry['atype']}\t{entry['amodel']}\t{entry['desc']}")
+
+if latest_todos:
+    total = len(latest_todos)
+    completed = sum(1 for t in latest_todos if isinstance(t, dict) and t.get('status') == 'completed')
+    current = next((t for t in latest_todos if isinstance(t, dict) and t.get('status') == 'in_progress'), None)
+    if current is None:
+        current = next((t for t in latest_todos if isinstance(t, dict) and t.get('status') == 'pending'), None)
+    text = ''
+    if isinstance(current, dict):
+        text = clean(current.get('activeForm') or current.get('content'), 60)
+    print(f'TODO\t{completed}\t{total}\t{text}')
+PYEOF
+)
+        printf '%s\n' "$_tr_value" > "$_tr_file"
+        echo "$_tr_src_mtime" > "$_tr_stamp"
     fi
-    read -r session_total_input session_total_output < "$_sto_file" 2>/dev/null
-    is_num "$session_total_input" || session_total_input=""
-    is_num "$session_total_output" || session_total_output=""
+
+    if [ -s "$_tr_file" ]; then
+        _now_epoch=$(date +%s)
+        while IFS=$'\t' read -r _tag _a _b _c _d; do
+            case "$_tag" in
+                TOKENS)
+                    session_total_input="$_a"; session_total_output="$_b" ;;
+                BUCKET)
+                    is_num "$_b" || continue
+                    case "$_a" in
+                        TOTAL) tool_calls_total="$_b" ;;
+                        SKILLS) bucket_skills="$_b" ;;
+                        CODE) bucket_code="$_b" ;;
+                        COMMANDS) bucket_commands="$_b" ;;
+                        READ) bucket_read="$_b" ;;
+                        MCP) bucket_mcp="$_b" ;;
+                        OTHER) bucket_other="$_b" ;;
+                    esac
+                    ;;
+                ACT)
+                    # _a status, _b count, _c name, _d target
+                    if [ "$_a" = "run" ]; then
+                        _act="${ORANGE}◐${RESET} ${CYAN}${_c}${RESET}"
+                        [ -n "$_d" ] && _act="${_act}${C_MUTED}: ${_d}${RESET}"
+                    elif is_num "$_b" && [ "$_b" -gt 1 ]; then
+                        _act="${GREEN}✓${RESET} ${CYAN}${_c}${RESET} ${C_ACCENT}×${_b}${RESET}"
+                    else
+                        _act="${GREEN}✓${RESET} ${CYAN}${_c}${RESET}"
+                        [ -n "$_d" ] && _act="${_act}${C_MUTED}: ${_d}${RESET}"
+                    fi
+                    [ -n "$activity_value" ] && activity_value="${activity_value} | "
+                    activity_value="${activity_value}${_act}"
+                    ;;
+                AGENT)
+                    # _a start epoch, _b subagent type, _c model, _d description
+                    _ag="${ORANGE}◐${RESET} ${CYAN}${_b}${RESET}"
+                    [ -n "$_c" ] && _ag="${_ag} ${C_MUTED}[${_c}]${RESET}"
+                    [ -n "$_d" ] && _ag="${_ag}${C_LABEL}:${RESET} ${_d}"
+                    if is_num "$_a"; then
+                        _el=$(fmt_elapsed_s $(( _now_epoch - _a )))
+                        [ -n "$_el" ] && _ag="${_ag} ${C_MUTED}(${_el})${RESET}"
+                    fi
+                    [ -n "$agents_value" ] && agents_value="${agents_value} | "
+                    agents_value="${agents_value}${_ag}"
+                    ;;
+                TODO)
+                    # _a completed, _b total, _c current item text
+                    if is_num "$_a" && is_num "$_b" && [ "$_b" -gt 0 ]; then
+                        todo_value="${C_ACCENT}▸${RESET}"
+                        [ -n "$_c" ] && todo_value="${todo_value} ${_c}"
+                        todo_value="${todo_value} ${C_MUTED}(${_a}/${_b})${RESET}"
+                    fi
+                    ;;
+            esac
+        done < "$_tr_file"
+        is_num "$session_total_input" || session_total_input=""
+        is_num "$session_total_output" || session_total_output=""
+    fi
 fi
 
 # ---------------------------------------------------------------------------
-# Thinking (API) time, version, line diff, cost, session duration
+# Thinking (API) time, line diff, session duration
 # ---------------------------------------------------------------------------
-api_ms=$(jqr '.cost.total_api_duration_ms // empty')
 thinking_value=""
 if is_num "$api_ms" && [ "${api_ms%.*}" -gt 0 ]; then
     thinking_value=$(fmt_duration_ms "$api_ms")
 fi
 
-cc_version=$(jqr '.version // empty')
+la=${lines_added%.*}; is_num "$la" || la=0
+lr=${lines_removed%.*}; is_num "$lr" || lr=0
 
-lines_added=$(jqr '.cost.total_lines_added // 0')
-lines_removed=$(jqr '.cost.total_lines_removed // 0')
-la=${lines_added%.*}; [ -z "$la" ] && la=0
-lr=${lines_removed%.*}; [ -z "$lr" ] && lr=0
-
-cost_usd=$(jqr '.cost.total_cost_usd // empty')
-
-dur_ms=$(jqr '.cost.total_duration_ms // empty')
 session_dur_value=""
 is_num "$dur_ms" && session_dur_value=$(fmt_duration_ms "$dur_ms")
-
-# Subscription vs API-key/OpenRouter detection (rate_limits presence is the signal)
-five_util_probe=$(jqr '.rate_limits.five_hour.used_percentage // empty')
-seven_util_probe=$(jqr '.rate_limits.seven_day.used_percentage // empty')
-IS_SUBSCRIPTION=0
-is_num "$five_util_probe" && is_num "$seven_util_probe" && IS_SUBSCRIPTION=1
 
 # ---------------------------------------------------------------------------
 # Subscription renewal cycle — Anthropic exposes no billing/renewal date in
@@ -528,15 +1178,15 @@ resolve_subscription_start_date() {
 }
 
 subscription_warning_line=""
-subscription_line=""
-if [ "$IS_SUBSCRIPTION" -eq 1 ]; then
+subscription_value=""
+if [ "$IS_SUBSCRIPTION" -eq 1 ] && [ "$cfg_show_subscription" = "1" ]; then
     resolve_subscription_start_date
     case "$SUBSCRIPTION_DATE_STATE" in
         missing)
-            subscription_warning_line="${BOLD_RED}SUBSCRIPTION START DATE IS MISSING - ADD IT TO THE CLAUDE.MD: \"subscription_start_date\": \"dd/MM/yyyy\"${RESET}"
+            subscription_warning_line="${BOLD_RED}${L_SUB_MISSING}${RESET}"
             ;;
         invalid)
-            subscription_warning_line="${BOLD_RED}SUBSCRIPTION START DATE IS INVALID - ADD IT TO THE CLAUDE.MD: \"subscription_start_date\": \"dd/MM/yyyy\"${RESET}"
+            subscription_warning_line="${BOLD_RED}${L_SUB_INVALID}${RESET}"
             ;;
         valid)
             _sub_day="${SUBSCRIPTION_START_RAW%%/*}"
@@ -561,7 +1211,6 @@ if [ "$IS_SUBSCRIPTION" -eq 1 ]; then
                 # Ceiling division, same rounding convention as the weekly reset label
                 _sub_days_left=$(( (_cycle_end - _sub_now + 86399) / 86400 ))
                 [ "$_sub_days_left" -lt 0 ] && _sub_days_left=0
-                _sub_bar=$(make_bar "$_sub_pct" "$BAR_WIDTH")
                 _sub_reset_date=$(format_date_epoch "$_cycle_end")
                 # Informational progress coloring, not a rate-limit warning:
                 # green early, orange mid-cycle, red in the final ~2 days.
@@ -569,80 +1218,103 @@ if [ "$IS_SUBSCRIPTION" -eq 1 ]; then
                 elif [ "$_sub_pct" -ge 50 ]; then _sub_color="$ORANGE"
                 else _sub_color="$GREEN"
                 fi
-                subscription_line="${WHITE}Subscription:${RESET} ${_sub_color}${_sub_pct}%${RESET} ${_sub_color}[${_sub_bar}]${RESET} ${GREY}(Reset: ${_sub_days_left}d [${_sub_reset_date}])${RESET}"
+                _sub_bar=$(render_bar "$_sub_pct" "$_sub_color")
+                subscription_value="${_sub_color}${_sub_pct}%${RESET} ${_sub_bar} ${C_MUTED}(${L_RESET} ${_sub_days_left}d [${_sub_reset_date}])${RESET}"
             fi
             ;;
     esac
 fi
 
 # ---------------------------------------------------------------------------
-# Line 1 — Model | Repo | Branch | Worktree | Lines Changes | Claude Version
+# Segments — every field renders into a named segment string (or stays empty,
+# which drops it and its separator); the layout assembly at the bottom maps
+# segments onto lines. Segment names are the config/layout vocabulary.
 # ---------------------------------------------------------------------------
-line1=""
-if [ -n "$model" ]; then
-    line1="${WHITE}Model:${RESET} ${CYAN}${model}${RESET}"
+
+seg_model=""
+if [ "$cfg_show_model" = "1" ] && [ -n "$model" ]; then
+    seg_model="${C_LABEL}${L_MODEL}${RESET} ${C_MODEL}${model}${RESET}"
+    [ -n "$provider_badge" ] && seg_model="${seg_model} ${C_MUTED}[${provider_badge}]${RESET}"
 fi
-if [ -n "$project" ]; then
-    [ -n "$line1" ] && line1="${line1} | "
-    line1="${line1}${WHITE}Repo:${RESET} ${GREEN}${project}${RESET}"
+
+seg_repo=""
+if [ "$cfg_show_repo" = "1" ] && [ -n "$project_dir" ]; then
+    _repo_display=$(path_tail "$project_dir" "$cfg_path_levels")
+    [ -n "$_repo_display" ] && seg_repo="${C_LABEL}${L_REPO}${RESET} ${C_REPO}${_repo_display}${RESET}"
 fi
-if [ -n "$git_branch" ]; then
-    [ -n "$line1" ] && line1="${line1} | "
-    line1="${line1}${WHITE}Branch:${RESET} ${MAGENTA}${git_branch}${RESET}"
+
+seg_branch=""
+if [ "$cfg_show_branch" = "1" ] && [ -n "$git_branch" ]; then
+    _branch_display="$git_branch"
+    [ "$cfg_show_git_dirty" = "1" ] && [ "$git_dirty" = "1" ] && _branch_display="${_branch_display}*"
+    seg_branch="${C_LABEL}${L_BRANCH}${RESET} ${C_BRANCH}${_branch_display}${RESET}"
+    if [ "$cfg_show_git_ahead_behind" = "1" ]; then
+        if is_num "$git_ahead" && [ "$git_ahead" -gt 0 ]; then
+            if [ "$git_ahead" -ge "$cfg_push_critical" ]; then _ab_color="$RED"
+            elif [ "$git_ahead" -ge "$cfg_push_warning" ]; then _ab_color="$ORANGE"
+            else _ab_color="$GREEN"
+            fi
+            seg_branch="${seg_branch} ${_ab_color}↑${git_ahead}${RESET}"
+        fi
+        if is_num "$git_behind" && [ "$git_behind" -gt 0 ]; then
+            seg_branch="${seg_branch} ${C_MUTED}↓${git_behind}${RESET}"
+        fi
+    fi
+    if [ "$cfg_show_git_file_stats" = "1" ]; then
+        _stats=""
+        is_num "$git_modified" && [ "$git_modified" -gt 0 ] && _stats="${_stats}${_stats:+ }!${git_modified}"
+        is_num "$git_staged" && [ "$git_staged" -gt 0 ] && _stats="${_stats}${_stats:+ }+${git_staged}"
+        is_num "$git_untracked" && [ "$git_untracked" -gt 0 ] && _stats="${_stats}${_stats:+ }?${git_untracked}"
+        [ -n "$_stats" ] && seg_branch="${seg_branch} ${C_MUTED}${_stats}${RESET}"
+    fi
 fi
-if [ -n "$worktree" ]; then
-    [ -n "$line1" ] && line1="${line1} | "
-    line1="${line1}${WHITE}Worktree:${RESET} ${MAGENTA}${worktree}${RESET}"
+
+seg_worktree=""
+if [ "$cfg_show_worktree" = "1" ] && [ -n "$worktree" ]; then
+    seg_worktree="${C_LABEL}${L_WORKTREE}${RESET} ${C_BRANCH}${worktree}${RESET}"
 fi
+
 # Workspace-wide git figures preferred; the session's own cost figures are
 # the fallback when no git repo was measurable (see the workspace section).
-lines_changed_added="$la"; lines_changed_removed="$lr"
-if is_num "$ws_added" && is_num "$ws_removed"; then
-    lines_changed_added="$ws_added"; lines_changed_removed="$ws_removed"
-fi
-if [ "$lines_changed_added" -gt 0 ] || [ "$lines_changed_removed" -gt 0 ]; then
-    [ -n "$line1" ] && line1="${line1} | "
-    line1="${line1}${WHITE}Lines Changes:${RESET} ${GREEN}+${lines_changed_added}${RESET} ${RED}-${lines_changed_removed}${RESET}"
-fi
-if [ -n "$cc_version" ]; then
-    [ -n "$line1" ] && line1="${line1} | "
-    line1="${line1}${WHITE}Claude Version:${RESET} ${GREY}v${cc_version}${RESET}"
+seg_lines_changed=""
+if [ "$cfg_show_lines_changed" = "1" ]; then
+    lines_changed_added="$la"; lines_changed_removed="$lr"
+    if is_num "$ws_added" && is_num "$ws_removed"; then
+        lines_changed_added="$ws_added"; lines_changed_removed="$ws_removed"
+    fi
+    if [ "$lines_changed_added" -gt 0 ] || [ "$lines_changed_removed" -gt 0 ]; then
+        seg_lines_changed="${C_LABEL}${L_LINES_CHANGED}${RESET} ${GREEN}+${lines_changed_added}${RESET} ${RED}-${lines_changed_removed}${RESET}"
+    fi
 fi
 
-# ---------------------------------------------------------------------------
-# Line 2 — mode-dependent:
-# subscription mode -> Sessions: 5h / Nd usage with reset time-left + clock
-#                       (Nd = actual days remaining until the weekly window
-#                       resets, computed live — not hardcoded to "7d", since
-#                       it's a rolling window). Bars are colored to match
-#                       their usage color (green/orange/red), not a flat blue.
-# OpenRouter mode     -> live Balance bar from /api/v1/credits, same coloring
-# other API-key mode  -> omitted (no reliable balance source exists)
-# ---------------------------------------------------------------------------
-line2=""
-if [ "$IS_SUBSCRIPTION" -eq 1 ]; then
-    five_util="$five_util_probe"
-    five_reset=$(jqr '.rate_limits.five_hour.resets_at // empty')
-    seven_util="$seven_util_probe"
-    seven_reset=$(jqr '.rate_limits.seven_day.resets_at // empty')
+seg_version=""
+if [ "$cfg_show_version" = "1" ] && [ -n "$cc_version" ]; then
+    seg_version="${C_LABEL}${L_VERSION}${RESET} ${C_MUTED}v${cc_version}${RESET}"
+fi
 
-    five_pct=${five_util%.*}; is_num "$five_pct" || five_pct=0
-    seven_pct=${seven_util%.*}; is_num "$seven_pct" || seven_pct=0
+seg_subscription="$subscription_value"
+[ -n "$seg_subscription" ] && seg_subscription="${C_LABEL}${L_SUBSCRIPTION}${RESET} ${seg_subscription}"
 
-    five_color=$(usage_color "$five_pct" "5h")
-    seven_color=$(usage_color "$seven_pct" "7d")
+# Sessions: 5h / Nd usage with reset time-left + clock (Nd = actual days
+# remaining until the weekly window resets, computed live — not hardcoded to
+# "7d", since it's a rolling window). Bars are colored to match their usage
+# color (green/orange/red), not a flat blue.
+seg_sessions=""
+if [ "$IS_SUBSCRIPTION" -eq 1 ] && [ "$cfg_show_sessions" = "1" ]; then
+    five_pct=${five_util_probe%.*}; is_num "$five_pct" || five_pct=0
+    seven_pct=${seven_util_probe%.*}; is_num "$seven_pct" || seven_pct=0
 
-    five_bar=$(make_bar "$five_pct" "$BAR_WIDTH")
-    seven_bar=$(make_bar "$seven_pct" "$BAR_WIDTH")
+    five_color=$(usage_color "$five_pct" "$cfg_5h_warn" "$cfg_5h_crit")
+    seven_color=$(usage_color "$seven_pct" "$cfg_7d_warn" "$cfg_7d_crit")
+
+    five_bar=$(render_bar "$five_pct" "$five_color")
+    seven_bar=$(render_bar "$seven_pct" "$seven_color")
 
     five_reset_clock=$(format_time_epoch "$five_reset")
     five_reset_countdown=$(fmt_countdown_epoch "$five_reset")
     seven_reset_clock=$(format_datetime_epoch "$seven_reset")
     seven_reset_countdown=$(fmt_countdown_epoch "$seven_reset")
 
-    # Dynamic day-count label for the weekly window: the reset is a rolling
-    # window, not always a literal 7 days out, so we compute the actual
-    # number of days remaining from "now" to resets_at rather than hardcoding "7d".
     seven_days_label="7d"
     seven_reset_int=${seven_reset%.*}
     if is_num "$seven_reset_int"; then
@@ -654,33 +1326,34 @@ if [ "$IS_SUBSCRIPTION" -eq 1 ]; then
         seven_days_label="${_days_left}d"
     fi
 
-    line2="${WHITE}Sessions:${RESET} ${YELLOW}5h:${RESET} ${five_color}${five_pct}%${RESET} ${five_color}[${five_bar}]${RESET}"
+    seg_sessions="${C_LABEL}${L_SESSIONS}${RESET} ${C_ACCENT}5h:${RESET} ${five_color}${five_pct}%${RESET} ${five_bar}"
     if [ -n "$five_reset_countdown" ] && [ -n "$five_reset_clock" ]; then
-        line2="${line2} ${GREY}(Reset: ${five_reset_countdown} [${five_reset_clock}])${RESET}"
+        seg_sessions="${seg_sessions} ${C_MUTED}(${L_RESET} ${five_reset_countdown} [${five_reset_clock}])${RESET}"
     elif [ -n "$five_reset_clock" ]; then
-        line2="${line2} ${GREY}(Reset: ${five_reset_clock})${RESET}"
+        seg_sessions="${seg_sessions} ${C_MUTED}(${L_RESET} ${five_reset_clock})${RESET}"
     fi
 
-    line2="${line2} | ${YELLOW}${seven_days_label}:${RESET} ${seven_color}${seven_pct}%${RESET} ${seven_color}[${seven_bar}]${RESET}"
+    seg_sessions="${seg_sessions} | ${C_ACCENT}${seven_days_label}:${RESET} ${seven_color}${seven_pct}%${RESET} ${seven_bar}"
     if [ -n "$seven_reset_countdown" ] && [ -n "$seven_reset_clock" ]; then
-        line2="${line2} ${GREY}(Reset: ${seven_reset_countdown} [${seven_reset_clock}])${RESET}"
+        seg_sessions="${seg_sessions} ${C_MUTED}(${L_RESET} ${seven_reset_countdown} [${seven_reset_clock}])${RESET}"
     elif [ -n "$seven_reset_clock" ]; then
-        line2="${line2} ${GREY}(Reset: ${seven_reset_clock})${RESET}"
+        seg_sessions="${seg_sessions} ${C_MUTED}(${L_RESET} ${seven_reset_clock})${RESET}"
     fi
+fi
 
-elif [ "$IS_OPENROUTER" -eq 1 ] && [ -n "$OPENROUTER_API_KEY" ] && command -v curl >/dev/null 2>&1; then
-    # Live balance from OpenRouter, 60s cache, timeout-bounded so a slow/down
-    # API never blocks the render. Both total and remaining are read live —
-    # never hardcoded — so top-ups are reflected automatically.
-    _or_dir="/tmp/super-status/openrouter-cache"
+# OpenRouter live balance from /api/v1/credits, 60s cache, timeout-bounded so
+# a slow/down API never blocks the render. Both total and remaining are read
+# live — never hardcoded — so top-ups are reflected automatically. The cache
+# needs no per-key filename: the whole cache root is already per-user private.
+seg_balance=""
+if [ "$IS_OPENROUTER" -eq 1 ] && [ "$cfg_show_balance" = "1" ] && [ -n "$OPENROUTER_API_KEY" ] && command -v curl >/dev/null 2>&1; then
+    _or_dir="$CACHE_ROOT/openrouter-cache"
     mkdir -p "$_or_dir"
-    _or_key=$(echo "$OPENROUTER_API_KEY" | md5sum 2>/dev/null | cut -d' ' -f1)
-    [ -z "$_or_key" ] && _or_key="default"
-    _or_file="$_or_dir/${_or_key}.json"
-    _or_stamp="$_or_dir/${_or_key}.stamp"
+    _or_file="$_or_dir/credits.json"
+    _or_stamp="$_or_dir/credits.stamp"
     _or_do_fetch=1
     if [ -f "$_or_stamp" ]; then
-        _or_age=$(( $(date +%s) - $(stat -c %Y "$_or_stamp" 2>/dev/null || stat -f %m "$_or_stamp" 2>/dev/null || echo 0) ))
+        _or_age=$(( $(date +%s) - $(file_mtime "$_or_stamp") ))
         [ "$_or_age" -lt 60 ] && _or_do_fetch=0
     fi
     if [ "$_or_do_fetch" -eq 1 ]; then
@@ -692,209 +1365,234 @@ elif [ "$IS_OPENROUTER" -eq 1 ] && [ -n "$OPENROUTER_API_KEY" ] && command -v cu
         fi
     fi
     if [ -f "$_or_file" ]; then
-        or_total=$(jq -r '.data.total_credits // empty' "$_or_file" 2>/dev/null)
-        or_used=$(jq -r '.data.total_usage // empty' "$_or_file" 2>/dev/null)
+        IFS=$'\t' read -r or_total or_used <<< "$(jq -r '[(.data.total_credits // ""), (.data.total_usage // "")] | @tsv' "$_or_file" 2>/dev/null)"
         if is_num "$or_total" && is_num "$or_used"; then
             or_remaining=$(awk "BEGIN{printf \"%.2f\", $or_total - $or_used}")
             or_used_pct=$(awk "BEGIN{ if ($or_total > 0) printf \"%.0f\", ($or_used/$or_total)*100; else print 0 }")
-            or_bar=$(make_bar "$or_used_pct" "$BAR_WIDTH")
-            or_color=$(usage_color "$or_used_pct" "5h")
-            line2="${WHITE}Balance:${RESET} ${or_color}\$$(printf "%.2f" "$or_remaining") / \$$(printf "%.2f" "$or_total")${RESET} ${or_color}[${or_bar}]${RESET} ${or_color}${or_used_pct}% used${RESET}"
+            or_color=$(usage_color "$or_used_pct" "$cfg_5h_warn" "$cfg_5h_crit")
+            or_bar=$(render_bar "$or_used_pct" "$or_color")
+            seg_balance="${C_LABEL}${L_BALANCE}${RESET} ${or_color}\$$(printf "%.2f" "$or_remaining") / \$$(printf "%.2f" "$or_total")${RESET} ${or_bar} ${or_color}${or_used_pct}% ${L_USED}${RESET}"
         fi
     fi
 fi
-# other API-key mode (Anthropic pay-as-you-go, z.ai, etc.): line2 stays empty,
-# omitted cleanly below — no reliable balance source exists for these.
 
-# ---------------------------------------------------------------------------
-# Line 3 — Context % + bar + tokens | Cost | session token totals
-# ---------------------------------------------------------------------------
-line3="${WHITE}Context:${RESET} ${pct_color}${pct}%${RESET} ${pct_color}[${ctx_bar}]${RESET} ${GREY}(${token_used_k}k/${token_max_k}k)${RESET}"
-if is_num "$cost_usd"; then
+# Context segment — which value(s) render next to the bar is configurable:
+# percent | tokens | remaining (tokens left before auto-compact) | both.
+seg_context=""
+if [ "$cfg_show_context" = "1" ]; then
+    _ctx_bar=$(render_bar "$pct" "$pct_color")
+    case "$cfg_context_value" in
+        percent)
+            seg_context="${C_LABEL}${L_CONTEXT}${RESET} ${pct_color}${pct}%${RESET} ${_ctx_bar}"
+            ;;
+        tokens)
+            seg_context="${C_LABEL}${L_CONTEXT}${RESET} ${_ctx_bar} ${C_MUTED}(${token_used_k}k/${token_max_k}k)${RESET}"
+            ;;
+        remaining)
+            seg_context="${C_LABEL}${L_CONTEXT}${RESET} ${_ctx_bar} ${C_MUTED}(${remaining_k}k ${L_LEFT})${RESET}"
+            ;;
+        both|*)
+            seg_context="${C_LABEL}${L_CONTEXT}${RESET} ${pct_color}${pct}%${RESET} ${_ctx_bar} ${C_MUTED}(${token_used_k}k/${token_max_k}k)${RESET}"
+            ;;
+    esac
+fi
+
+seg_cost=""
+if [ "$cfg_show_cost" = "1" ] && is_num "$cost_usd"; then
     # On subscription mode this figure is computed at standard API list rates
     # and has no relationship to the flat monthly fee actually billed — it's
     # an API-equivalent estimate. On API-key/OpenRouter mode it IS real spend.
-    cost_label="Cost:"
-    [ "$IS_SUBSCRIPTION" -eq 1 ] && cost_label="Cost (est.):"
-    line3="${line3} | ${WHITE}${cost_label}${RESET} ${YELLOW}\$$(printf "%.2f" "$cost_usd")${RESET}"
+    _cost_label="$L_COST"
+    [ "$IS_SUBSCRIPTION" -eq 1 ] && _cost_label="$L_COST_EST"
+    seg_cost="${C_LABEL}${_cost_label}${RESET} ${C_ACCENT}\$$(printf "%.2f" "$cost_usd")${RESET}"
 fi
-if is_num "$session_total_input" && is_num "$session_total_output"; then
+
+seg_total_tokens=""
+if [ "$cfg_show_total_tokens" = "1" ] && is_num "$session_total_input" && is_num "$session_total_output"; then
     _in_fmt=$(fmt_tokens_k "$session_total_input")
     _out_fmt=$(fmt_tokens_k "$session_total_output")
-    line3="${line3} | ${WHITE}Total Tokens:${RESET} ${GREY}${_in_fmt} in / ${_out_fmt} out${RESET}"
+    seg_total_tokens="${C_LABEL}${L_TOTAL_TOKENS}${RESET} ${C_MUTED}${_in_fmt} in / ${_out_fmt} out${RESET}"
 fi
 
-# ---------------------------------------------------------------------------
-# Line 4 — Lines of code | Total Session Time | Total thinking time
-# ---------------------------------------------------------------------------
-line4=""
+seg_loc=""
 if [ -n "$loc_value" ]; then
-    line4="${WHITE}Lines of code in project:${RESET} ${GREY}${loc_value}${RESET}"
-fi
-if [ -n "$session_dur_value" ]; then
-    [ -n "$line4" ] && line4="${line4} | "
-    line4="${line4}${WHITE}Total Session Time:${RESET} ${GREY}${session_dur_value}${RESET}"
-fi
-if [ -n "$thinking_value" ]; then
-    [ -n "$line4" ] && line4="${line4} | "
-    line4="${line4}${WHITE}Total thinking time:${RESET} ${GREY}${thinking_value}${RESET}"
+    seg_loc="${C_LABEL}${L_LOC}${RESET} ${C_MUTED}${loc_value}${RESET}"
 fi
 
-# ---------------------------------------------------------------------------
-# Shared transcript pass (feeds lines 5 and 6) — every tool_use block in the
-# transcript JSONL is mapped into exactly one of six semantic buckets:
-#   Skills   -> Skill
-#   Code     -> Edit / Write / MultiEdit / NotebookEdit (edit-capable tools)
-#   Commands -> Bash (no per-command split — that open-ended list is what
-#               made the old Tools Stats line unstable)
-#   Read     -> Read / Glob / Grep / LS
-#   MCP Call -> any mcp__* prefixed tool, regardless of server
-#   Other    -> guaranteed fallback, so nothing silently disappears
-# The bucket sum always equals the printed total by construction. The Code
-# bucket doubles as the Efficiency Grade denominator on line 5. Cached by
-# session_id + transcript mtime, same as the other transcript-derived fields.
-# ---------------------------------------------------------------------------
-tool_calls_total=""
-bucket_skills=""; bucket_code=""; bucket_commands=""
-bucket_read=""; bucket_mcp=""; bucket_other=""
-if [ -n "$transcript_path" ] && [ -f "$transcript_path" ]; then
-    _tst_dir="/tmp/super-status/toolcalls-cache"
-    mkdir -p "$_tst_dir"
-    _tst_key="${session_id:-$(echo "$transcript_path" | tr '/' '_')}"
-    _tst_file="$_tst_dir/${_tst_key}.txt"
-    _tst_stamp="$_tst_dir/${_tst_key}.mtime"
-    _tst_src_mtime=$(stat -c %Y "$transcript_path" 2>/dev/null || stat -f %m "$transcript_path" 2>/dev/null || echo 0)
-    _tst_cached_mtime=$(cat "$_tst_stamp" 2>/dev/null || echo -1)
-    if [ "$_tst_src_mtime" != "$_tst_cached_mtime" ]; then
-        _tst_value=$(python3 -c "
-import json, sys
-
-path = sys.argv[1]
-buckets = {'SKILLS': 0, 'CODE': 0, 'COMMANDS': 0, 'READ': 0, 'MCP': 0, 'OTHER': 0}
-code_tools = {'edit', 'write', 'multiedit', 'notebookedit'}
-read_tools = {'read', 'glob', 'grep', 'ls'}
-
-try:
-    with open(path, 'r') as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                obj = json.loads(line)
-            except Exception:
-                continue
-            content = (obj.get('message') or {}).get('content')
-            if not isinstance(content, list):
-                continue
-            for block in content:
-                if not (isinstance(block, dict) and block.get('type') == 'tool_use'):
-                    continue
-                name = block.get('name') or ''
-                low = name.lower()
-                if name.startswith('mcp__'):
-                    buckets['MCP'] += 1
-                elif low == 'skill':
-                    buckets['SKILLS'] += 1
-                elif low in code_tools:
-                    buckets['CODE'] += 1
-                elif low == 'bash':
-                    buckets['COMMANDS'] += 1
-                elif low in read_tools:
-                    buckets['READ'] += 1
-                else:
-                    buckets['OTHER'] += 1
-except Exception:
-    pass
-
-print(f'TOTAL {sum(buckets.values())}')
-for key, count in buckets.items():
-    print(f'{key} {count}')
-" "$transcript_path" 2>/dev/null)
-        printf '%s\n' "$_tst_value" > "$_tst_file"
-        echo "$_tst_src_mtime" > "$_tst_stamp"
-    fi
-
-    if [ -s "$_tst_file" ]; then
-        while IFS=' ' read -r _cat _cnt; do
-            is_num "$_cnt" || continue
-            case "$_cat" in
-                TOTAL) tool_calls_total="$_cnt" ;;
-                SKILLS) bucket_skills="$_cnt" ;;
-                CODE) bucket_code="$_cnt" ;;
-                COMMANDS) bucket_commands="$_cnt" ;;
-                READ) bucket_read="$_cnt" ;;
-                MCP) bucket_mcp="$_cnt" ;;
-                OTHER) bucket_other="$_cnt" ;;
-            esac
-        done < "$_tst_file"
-    fi
+seg_session_time=""
+if [ "$cfg_show_session_time" = "1" ] && [ -n "$session_dur_value" ]; then
+    seg_session_time="${C_LABEL}${L_SESSION_TIME}${RESET} ${C_MUTED}${session_dur_value}${RESET}"
 fi
 
-# ---------------------------------------------------------------------------
-# Line 5 — Cache Vs Tokens % | Efficiency Grade
-# ---------------------------------------------------------------------------
-total_for_ratio=$(( ${token_input:-0} + ${token_cc:-0} + ${token_cr:-0} ))
-cache_ratio=""
-if [ "$total_for_ratio" -gt 0 ]; then
-    cache_ratio=$(awk "BEGIN{printf \"%.0f\", (${token_cr:-0} / $total_for_ratio) * 100}" 2>/dev/null)
+seg_thinking_time=""
+if [ "$cfg_show_thinking_time" = "1" ] && [ -n "$thinking_value" ]; then
+    seg_thinking_time="${C_LABEL}${L_THINKING}${RESET} ${C_MUTED}${thinking_value}${RESET}"
 fi
 
-# Denominator is edit-capable tool calls only (the Code bucket) — counting
-# read-only tools dragged exploration-heavy sessions toward F even when tool
-# use was entirely appropriate. No edits yet -> the field is omitted rather
-# than showing a misleading F(0).
-eff_grade=""; eff_score=""
-if is_num "$bucket_code" && [ "$bucket_code" -gt 0 ]; then
-    lines_changed=$(( la + lr ))
-    ratio=$(awk "BEGIN{printf \"%.2f\", $lines_changed / $bucket_code}" 2>/dev/null)
-    eff_score=$(awk "BEGIN{s=$ratio*40; if(s>100) s=100; printf \"%.0f\", s}" 2>/dev/null)
-    eff_grade=$(grade_for "$eff_score")
-fi
-
-line5=""
-if is_num "$cache_ratio"; then
+# Cache ratio + efficiency grade.
+# Efficiency denominator is edit-capable tool calls only (the Code bucket) —
+# counting read-only tools dragged exploration-heavy sessions toward F even
+# when tool use was entirely appropriate. No edits yet -> the field is omitted
+# rather than showing a misleading F(0).
+seg_cache_ratio=""
+if [ "$cfg_show_cache_ratio" = "1" ] && [ "$token_total" -gt 0 ]; then
+    cache_ratio=$(( ${token_cr%.*} * 100 / token_total ))
     if [ "$cache_ratio" -ge 75 ]; then cache_color="$GREEN"
     elif [ "$cache_ratio" -ge 40 ]; then cache_color="$ORANGE"
     else cache_color="$RED"
     fi
-    line5="${WHITE}Cache Vs Tokens:${RESET} ${cache_color}${cache_ratio}%${RESET}"
+    seg_cache_ratio="${C_LABEL}${L_CACHE_RATIO}${RESET} ${cache_color}${cache_ratio}%${RESET}"
 fi
-if [ -n "$eff_grade" ]; then
+
+seg_efficiency=""
+if [ "$cfg_show_efficiency" = "1" ] && is_num "$bucket_code" && [ "$bucket_code" -gt 0 ]; then
+    lines_changed=$(( la + lr ))
+    eff_score=$(( lines_changed * 40 / bucket_code ))
+    [ "$eff_score" -gt 100 ] && eff_score=100
+    eff_grade=$(grade_for "$eff_score")
     eff_color=$(grade_color "$eff_grade")
-    [ -n "$line5" ] && line5="${line5} | "
-    line5="${line5}${WHITE}Efficiency Grade (A–F):${RESET} ${eff_color}${eff_grade}(${eff_score})${RESET}"
+    seg_efficiency="${C_LABEL}${L_EFFICIENCY}${RESET} ${eff_color}${eff_grade}(${eff_score})${RESET}"
 fi
 
-# ---------------------------------------------------------------------------
-# Line 6 — Tool Calls (N): the six-bucket breakdown from the shared transcript
-# pass above. All six buckets always print (zeros included) — it's a fixed,
-# small taxonomy, so a stable line shape beats the omit-if-zero convention
-# used for the open-ended fields elsewhere.
-# ---------------------------------------------------------------------------
-line6=""
-if is_num "$tool_calls_total" && [ "$tool_calls_total" -gt 0 ]; then
-    line6="${WHITE}Tool Calls (${tool_calls_total}):${RESET}"
-    line6="${line6} ${CYAN}Skills:${RESET} ${YELLOW}${bucket_skills:-0}${RESET}"
-    line6="${line6} | ${CYAN}Code:${RESET} ${YELLOW}${bucket_code:-0}${RESET}"
-    line6="${line6} | ${CYAN}Commands:${RESET} ${YELLOW}${bucket_commands:-0}${RESET}"
-    line6="${line6} | ${CYAN}Read:${RESET} ${YELLOW}${bucket_read:-0}${RESET}"
-    line6="${line6} | ${CYAN}MCP Call:${RESET} ${YELLOW}${bucket_mcp:-0}${RESET}"
-    line6="${line6} | ${CYAN}Other:${RESET} ${YELLOW}${bucket_other:-0}${RESET}"
+# All six buckets always print (zeros included) — it's a fixed, small
+# taxonomy, so a stable line shape beats the omit-if-zero convention used for
+# the open-ended fields elsewhere.
+seg_tool_calls=""
+if [ "$cfg_show_tool_calls" = "1" ] && is_num "$tool_calls_total" && [ "$tool_calls_total" -gt 0 ]; then
+    seg_tool_calls="${C_LABEL}${L_TOOL_CALLS} (${tool_calls_total}):${RESET}"
+    seg_tool_calls="${seg_tool_calls} ${CYAN}Skills:${RESET} ${C_ACCENT}${bucket_skills:-0}${RESET}"
+    seg_tool_calls="${seg_tool_calls} | ${CYAN}Code:${RESET} ${C_ACCENT}${bucket_code:-0}${RESET}"
+    seg_tool_calls="${seg_tool_calls} | ${CYAN}Commands:${RESET} ${C_ACCENT}${bucket_commands:-0}${RESET}"
+    seg_tool_calls="${seg_tool_calls} | ${CYAN}Read:${RESET} ${C_ACCENT}${bucket_read:-0}${RESET}"
+    seg_tool_calls="${seg_tool_calls} | ${CYAN}MCP Call:${RESET} ${C_ACCENT}${bucket_mcp:-0}${RESET}"
+    seg_tool_calls="${seg_tool_calls} | ${CYAN}Other:${RESET} ${C_ACCENT}${bucket_other:-0}${RESET}"
 fi
 
+seg_activity=""
+if [ "$cfg_show_activity" = "1" ] && [ -n "$activity_value" ]; then
+    seg_activity="${C_LABEL}${L_ACTIVITY}${RESET} ${activity_value}"
+fi
+
+seg_agents=""
+if [ "$cfg_show_agents" = "1" ] && [ -n "$agents_value" ]; then
+    seg_agents="${C_LABEL}${L_AGENTS}${RESET} ${agents_value}"
+fi
+
+seg_todos=""
+if [ "$cfg_show_todos" = "1" ] && [ -n "$todo_value" ]; then
+    seg_todos="${C_LABEL}${L_TODO}${RESET} ${todo_value}"
+fi
+
+segment_value() {
+    case "$1" in
+        model) printf '%s' "$seg_model" ;;
+        repo) printf '%s' "$seg_repo" ;;
+        branch) printf '%s' "$seg_branch" ;;
+        worktree) printf '%s' "$seg_worktree" ;;
+        lines_changed) printf '%s' "$seg_lines_changed" ;;
+        version) printf '%s' "$seg_version" ;;
+        subscription) printf '%s' "$seg_subscription" ;;
+        sessions) printf '%s' "$seg_sessions" ;;
+        balance) printf '%s' "$seg_balance" ;;
+        context) printf '%s' "$seg_context" ;;
+        cost) printf '%s' "$seg_cost" ;;
+        total_tokens) printf '%s' "$seg_total_tokens" ;;
+        loc) printf '%s' "$seg_loc" ;;
+        session_time) printf '%s' "$seg_session_time" ;;
+        thinking_time) printf '%s' "$seg_thinking_time" ;;
+        cache_ratio) printf '%s' "$seg_cache_ratio" ;;
+        efficiency) printf '%s' "$seg_efficiency" ;;
+        tool_calls) printf '%s' "$seg_tool_calls" ;;
+        activity) printf '%s' "$seg_activity" ;;
+        agents) printf '%s' "$seg_agents" ;;
+        todos) printf '%s' "$seg_todos" ;;
+    esac
+}
+
 # ---------------------------------------------------------------------------
-# Output — only print lines that actually have content.
-# Uses %s (data), never re-parses content as a format string, so literal
-# '%' characters anywhere in the values can never break printf.
+# Assembly + output — warning lines first, then the layout's lines with empty
+# segments (and fully-empty lines) dropped. Lines are width-truncated with a
+# trailing "…" when a width is known: $COLUMNS if exported, else the config's
+# max_width; ANSI escapes are excluded from the width count. printf uses %s
+# (data), never re-parses content as a format string, so literal '%'
+# characters anywhere in the values can never break printf.
 # ---------------------------------------------------------------------------
-[ -n "$subscription_warning_line" ] && printf '%s\n' "$subscription_warning_line"
-[ -n "$line1" ] && printf '%s\n' "$line1"
-[ -n "$subscription_line" ] && printf '%s\n' "$subscription_line"
-[ -n "$line2" ] && printf '%s\n' "$line2"
-[ -n "$line3" ] && printf '%s\n' "$line3"
-[ -n "$line4" ] && printf '%s\n' "$line4"
-[ -n "$line5" ] && printf '%s\n' "$line5"
-[ -n "$line6" ] && printf '%s\n' "$line6"
+layout_spec="$LAYOUT_EXPANDED"
+[ "$cfg_layout" = "compact" ] && layout_spec="$LAYOUT_COMPACT"
+[ -n "$cfg_lines" ] && layout_spec="$cfg_lines"
+
+out_lines=()
+[ -n "$config_warning_line" ] && out_lines+=("$config_warning_line")
+[ -n "$subscription_warning_line" ] && out_lines+=("$subscription_warning_line")
+
+IFS='|' read -ra _layout_line_specs <<< "$layout_spec"
+for _lspec in "${_layout_line_specs[@]}"; do
+    _line=""
+    IFS=',' read -ra _seg_names <<< "$_lspec"
+    for _sn in "${_seg_names[@]}"; do
+        _sv=$(segment_value "$_sn")
+        [ -n "$_sv" ] || continue
+        [ -n "$_line" ] && _line+=" | "
+        _line+="$_sv"
+    done
+    [ -n "$_line" ] && out_lines+=("$_line")
+done
+
+term_width=0
+if is_num "${COLUMNS:-}" && [ "${COLUMNS:-0}" -gt 0 ]; then
+    term_width=$COLUMNS
+fi
+if [ "$cfg_max_width" -gt 0 ]; then
+    if [ "$term_width" -eq 0 ] || [ "$term_width" -gt "$cfg_max_width" ]; then
+        term_width=$cfg_max_width
+    fi
+fi
+
+if [ "${#out_lines[@]}" -gt 0 ]; then
+    if [ "$term_width" -gt 0 ]; then
+        # Byte-oriented awks (BSD awk, mawk) see UTF-8 continuation bytes as
+        # separate "characters"; the cont[] table marks them so multi-byte
+        # glyphs count as width 1 and are never split mid-sequence. In
+        # char-oriented gawk the table simply never matches, which is also
+        # correct. ANSI escapes are copied through without counting.
+        printf '%s\n' "${out_lines[@]}" | awk -v max="$term_width" '
+        BEGIN { for (b = 128; b < 192; b++) cont[sprintf("%c", b)] = 1 }
+        function visible_width(s,    i, n, c, w, r) {
+            n = length(s); i = 1; w = 0
+            while (i <= n) {
+                c = substr(s, i, 1)
+                if (c == "\033") {
+                    r = substr(s, i)
+                    if (match(r, /^\033\[[0-9;]*m/)) { i += RLENGTH; continue }
+                }
+                if (!(c in cont)) w++
+                i++
+            }
+            return w
+        }
+        {
+            line = $0
+            if (visible_width(line) <= max) { print line; next }
+            out = ""; vis = 0; i = 1; n = length(line)
+            while (i <= n) {
+                c = substr(line, i, 1)
+                if (c == "\033") {
+                    rest = substr(line, i)
+                    if (match(rest, /^\033\[[0-9;]*m/)) {
+                        out = out substr(rest, 1, RLENGTH)
+                        i += RLENGTH
+                        continue
+                    }
+                }
+                if (c in cont) { out = out c; i++; continue }
+                if (vis >= max - 1) break
+                out = out c; vis++; i++
+            }
+            print out "…\033[0m"
+        }'
+    else
+        printf '%s\n' "${out_lines[@]}"
+    fi
+fi
 
 exit 0

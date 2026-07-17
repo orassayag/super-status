@@ -1,0 +1,14 @@
+{
+  "name": "super-status",
+  "owner": {
+    "name": "Or Assayag",
+    "url": "https://github.com/orassayag"
+  },
+  "plugins": [
+    {
+      "name": "super-status",
+      "source": "./",
+      "description": "Combined Claude Code statusline — identity, context usage, session quality, plan-limit tracking, live activity, subagents, and todos in labeled lines."
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "name": "super-status",
+  "description": "Combined Claude Code statusline — identity, context usage, session quality, plan-limit tracking, live activity, subagents, and todos in labeled lines.",
+  "version": "2.0.0",
+  "author": {
+    "name": "Or Assayag",
+    "url": "https://github.com/orassayag"
+  },
+  "homepage": "https://github.com/orassayag/super-status",
+  "repository": "https://github.com/orassayag/super-status",
+  "license": "MIT",
+  "keywords": ["statusline", "status-bar", "usage", "context", "rate-limits"]
+}
