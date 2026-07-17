@@ -1455,7 +1455,7 @@ if [ "$cfg_show_tool_calls" = "1" ] && is_num "$tool_calls_total" && [ "$tool_ca
                   "$L_BUCKET_CODE:$bucket_code" "$L_BUCKET_SKILLS:$bucket_skills" \
                   "$L_BUCKET_MCP:$bucket_mcp" "$L_BUCKET_OTHER:$bucket_other"; do
         _bcount="${_bpair##*:}"
-        is_num "$_bcount" && [ "$_bcount" -gt 0 ] || continue
+        { is_num "$_bcount" && [ "$_bcount" -gt 0 ]; } || continue
         _buckets="${_buckets}${_buckets:+, }${_bpair%%:*} ${_bcount}"
     done
     seg_tool_calls="${L_TOOL_CALLS} ${tool_calls_total}"
