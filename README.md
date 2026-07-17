@@ -13,7 +13,7 @@ Supported platforms: **macOS**, **Linux**, and Windows via **WSL** or **Git Bash
 | `bash` | required | the script itself |
 | `jq` | required | stdin/config JSON parsing |
 | `python3` | required | transcript parsing (`Total Tokens:`, `Tool Calls:`, `Activity:`, `Agents:`, `Todo:`) — ships by default on macOS and most Linux distros |
-| `git` | recommended | branch, dirty/ahead-behind markers, `Lines Changes:` |
+| `git` | recommended | branch, dirty/ahead-behind markers |
 | `tokei` | optional | the `Lines of code in project:` field |
 | `curl` | optional | the OpenRouter `Balance:` line (Mode 3 only) |
 
@@ -261,7 +261,7 @@ To make the time fields update continuously instead of only on those events, add
 | `Repo:`            | `repo`               | Current project folder name (`path_levels` shows more of the path)     |
 | `Branch:`          | `master* ↑2 ↓1 !3 +1 ?2` | Current git branch, resolved from your working directory's git root. With the git toggles enabled: `*` = dirty working tree; `↑N`/`↓N` = commits ahead/behind upstream (`↑` colored by the push thresholds); `!N +N ?N` = modified / staged / untracked file counts (only non-zero ones shown). Refreshed at most every 10s |
 | `Worktree:`        | `feature-xyz`        | Only appears if this session is running inside a git worktree          |
-| `Lines Changes:`   | `+45 -12`             | Lines added/removed across the **whole workspace** since session start — every git repo under the project folder is measured (nested client/server repos included), against a baseline recorded when the session began, so pre-existing uncommitted changes don't count but committed, uncommitted, and untracked changes made during the session all do, even when they were made by sub-agents running in their own sessions (e.g. multi-agent orchestration). Falls back to Claude Code's own per-session counters when no git repo is found. Hidden if both are zero. Refreshed at most every 10s |
+| `Lines Changes:`   | `+45 -12`             | Lines added/removed this session, taken directly from Claude Code's own `cost.total_lines_added`/`total_lines_removed` counters — updates immediately on every render, no caching. Only counts edits made by this session's own tools (not sub-agents running in their own sessions, and not nested-repo work outside the current one). Hidden if both are zero |
 | `Claude Version:`  | `v2.1.90`             | Claude Code CLI version                                                |
 
 ### Line 2 — Subscription cycle (subscription mode only)
@@ -391,7 +391,7 @@ General reliability note: Claude Code is built and tested against Anthropic's fi
 
 ## Caches
 
-Everything super-status derives (LOC counts, workspace diffs, transcript parses, git status, the OpenRouter credits response) is cached under `${XDG_CACHE_HOME:-$HOME/.cache}/super-status/`, created with `0700` permissions — private to your user, unlike the world-readable `/tmp` location used before v2.0.0. It's always safe to delete the whole directory; everything in it is re-derived on the next render. `doctor.sh` removes a legacy `/tmp/super-status` directory if it finds one.
+Everything super-status derives (LOC counts, transcript parses, git status, the OpenRouter credits response) is cached under `${XDG_CACHE_HOME:-$HOME/.cache}/super-status/`, created with `0700` permissions — private to your user, unlike the world-readable `/tmp` location used before v2.0.0. It's always safe to delete the whole directory; everything in it is re-derived on the next render. `doctor.sh` removes a legacy `/tmp/super-status` directory if it finds one.
 
 ## Troubleshooting
 

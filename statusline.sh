@@ -366,28 +366,6 @@ path_tail() {
     printf '%s' "$out"
 }
 
-# Lines added/removed for one repo relative to a ref, printed as "added removed":
-# tracked-file diff via --numstat (staged + unstaged + commits made after the
-# ref), plus every untracked file's line count as additions. Binary files
-# (numstat prints "-") are skipped. EMPTY_TREE_SHA is git's well-known constant
-# empty-tree object, used as the ref for repos with no commits yet.
-EMPTY_TREE_SHA=4b825dc642cb6eb9a060e54bf8d69288fbee4904
-
-measure_repo_line_changes() {
-    local repo="$1" ref="$2"
-    local added=0 removed=0 a r f n
-    while read -r a r _; do
-        [[ "$a" =~ ^[0-9]+$ ]] && added=$(( added + a ))
-        [[ "$r" =~ ^[0-9]+$ ]] && removed=$(( removed + r ))
-    done < <(GIT_OPTIONAL_LOCKS=0 git -C "$repo" diff --numstat "$ref" -- 2>/dev/null)
-    while IFS= read -r f; do
-        [ -f "$repo/$f" ] || continue
-        n=$(wc -l < "$repo/$f" 2>/dev/null | tr -d '[:space:]')
-        [[ "$n" =~ ^[0-9]+$ ]] && added=$(( added + n ))
-    done < <(GIT_OPTIONAL_LOCKS=0 git -C "$repo" ls-files --others --exclude-standard 2>/dev/null)
-    echo "$added $removed"
-}
-
 file_mtime() {
     stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0
 }
@@ -707,80 +685,6 @@ if [ "$cfg_show_loc" = "1" ] && [ -n "$git_root" ] && [ -d "$git_root" ] && comm
     elif [ "$_total" -gt 0 ]; then
         loc_value="~${_total}"
     fi
-fi
-
-# ---------------------------------------------------------------------------
-# Workspace line changes (10s cache) — feeds "Lines Changes:" on line 1.
-# cost.total_lines_added/removed only counts edits made by THIS session's own
-# tools, so work done by sub-agents (e.g. /orca cmux panes) or inside nested
-# git repos (client/ + server/ boilerplates) never showed up. Instead, every
-# git repo under the workspace root (the folder VS Code / Claude Code is
-# opened on) is diffed against a per-session baseline: the repo's HEAD sha
-# plus its pre-existing dirty-line counts, both recorded the first time this
-# session sees that repo. The rendered figure therefore covers committed,
-# uncommitted, AND untracked changes made anywhere in the workspace since
-# session start, regardless of which agent made them. Pre-existing dirty
-# lines are subtracted back out (clamped at 0); a baseline sha that stops
-# resolving (rebase, gc) re-baselines that repo. The cost-based numbers
-# remain as the display fallback when no git repo is measurable, and always
-# feed the Efficiency Grade, which scores this session's own tool
-# productivity — not the whole workspace.
-ws_added=""; ws_removed=""
-ws_root="${project_dir:-${cwd:-$git_root}}"
-if [ "$cfg_show_lines_changed" = "1" ] && [ -n "$ws_root" ] && [ -d "$ws_root" ] && command -v git >/dev/null 2>&1; then
-    _ws_dir="$CACHE_ROOT/workspace-diff-cache"
-    mkdir -p "$_ws_dir"
-    _ws_key="${session_id:-$(echo "$ws_root" | tr '/' '_')}"
-    _ws_file="$_ws_dir/${_ws_key}.txt"
-    _ws_stamp="$_ws_dir/${_ws_key}.stamp"
-    _ws_do_count=1
-    if [ -f "$_ws_stamp" ]; then
-        _ws_age=$(( $(date +%s) - $(file_mtime "$_ws_stamp") ))
-        [ "$_ws_age" -lt 10 ] && _ws_do_count=0
-    fi
-    if [ "$_ws_do_count" -eq 1 ]; then
-        _ws_total_added=0; _ws_total_removed=0; _ws_repo_seen=0
-        while IFS= read -r _ws_git_marker; do
-            _ws_repo=$(dirname "$_ws_git_marker")
-            _ws_repo_seen=1
-            _ws_base_file="$_ws_dir/${_ws_key}__$(echo "$_ws_repo" | tr '/' '_').base"
-            _ws_base_sha=""; _ws_base_added=""; _ws_base_removed=""
-            [ -f "$_ws_base_file" ] && read -r _ws_base_sha _ws_base_added _ws_base_removed < "$_ws_base_file" 2>/dev/null
-            _ws_base_valid=0
-            if [ "$_ws_base_sha" = "$EMPTY_TREE_SHA" ]; then
-                _ws_base_valid=1
-            elif [ -n "$_ws_base_sha" ] && git -C "$_ws_repo" cat-file -e "$_ws_base_sha" 2>/dev/null; then
-                _ws_base_valid=1
-            fi
-            if [ "$_ws_base_valid" -eq 0 ]; then
-                # --verify prints nothing on an unborn HEAD; a plain
-                # `rev-parse HEAD` would echo the literal string "HEAD" there
-                _ws_base_sha=$(GIT_OPTIONAL_LOCKS=0 git -C "$_ws_repo" rev-parse --verify HEAD 2>/dev/null)
-                [ -z "$_ws_base_sha" ] && _ws_base_sha="$EMPTY_TREE_SHA"
-                read -r _ws_base_added _ws_base_removed <<< "$(measure_repo_line_changes "$_ws_repo" "$_ws_base_sha")"
-                echo "$_ws_base_sha $_ws_base_added $_ws_base_removed" > "$_ws_base_file"
-            fi
-            read -r _ws_cur_added _ws_cur_removed <<< "$(measure_repo_line_changes "$_ws_repo" "$_ws_base_sha")"
-            is_num "$_ws_base_added" || _ws_base_added=0
-            is_num "$_ws_base_removed" || _ws_base_removed=0
-            is_num "$_ws_cur_added" || _ws_cur_added=0
-            is_num "$_ws_cur_removed" || _ws_cur_removed=0
-            _ws_delta_added=$(( _ws_cur_added - _ws_base_added ))
-            _ws_delta_removed=$(( _ws_cur_removed - _ws_base_removed ))
-            [ "$_ws_delta_added" -lt 0 ] && _ws_delta_added=0
-            [ "$_ws_delta_removed" -lt 0 ] && _ws_delta_removed=0
-            _ws_total_added=$(( _ws_total_added + _ws_delta_added ))
-            _ws_total_removed=$(( _ws_total_removed + _ws_delta_removed ))
-        done < <(find "$ws_root" -maxdepth 4 \( -name node_modules -o -name .venv -o -name vendor \) -prune -o -name .git -print 2>/dev/null)
-        if [ "$_ws_repo_seen" -eq 1 ]; then
-            echo "$_ws_total_added $_ws_total_removed" > "$_ws_file"
-        else
-            : > "$_ws_file"
-        fi
-        touch "$_ws_stamp"
-    fi
-    read -r ws_added ws_removed < "$_ws_file" 2>/dev/null
-    if ! is_num "$ws_added" || ! is_num "$ws_removed"; then ws_added=""; ws_removed=""; fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -1274,16 +1178,13 @@ if [ "$cfg_show_worktree" = "1" ] && [ -n "$worktree" ]; then
     seg_worktree="${C_LABEL}${L_WORKTREE}${RESET} ${C_BRANCH}${worktree}${RESET}"
 fi
 
-# Workspace-wide git figures preferred; the session's own cost figures are
-# the fallback when no git repo was measurable (see the workspace section).
+# Straight from Claude Code's own cost.total_lines_added/removed — this only
+# reflects edits made by this session's own tools (not sub-agents or nested
+# repos), but it's what Claude Code itself reports, so it's never stale.
 seg_lines_changed=""
 if [ "$cfg_show_lines_changed" = "1" ]; then
-    lines_changed_added="$la"; lines_changed_removed="$lr"
-    if is_num "$ws_added" && is_num "$ws_removed"; then
-        lines_changed_added="$ws_added"; lines_changed_removed="$ws_removed"
-    fi
-    if [ "$lines_changed_added" -gt 0 ] || [ "$lines_changed_removed" -gt 0 ]; then
-        seg_lines_changed="${C_LABEL}${L_LINES_CHANGED}${RESET} ${GREEN}+${lines_changed_added}${RESET} ${RED}-${lines_changed_removed}${RESET}"
+    if [ "$la" -gt 0 ] || [ "$lr" -gt 0 ]; then
+        seg_lines_changed="${C_LABEL}${L_LINES_CHANGED}${RESET} ${GREEN}+${la}${RESET} ${RED}-${lr}${RESET}"
     fi
 fi
 

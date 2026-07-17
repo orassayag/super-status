@@ -1,5 +1,17 @@
 # Changelog
 
+## 2.0.1 — 17/07/2026
+
+### Fixed
+- **`Lines Changes:` reverted to Claude Code's own `cost.total_lines_added`/
+  `total_lines_removed` counters**, dropping the workspace-wide git-diff/baseline
+  cache introduced alongside it (predates 2.0.0, but the two shipped close
+  together and the baseline logic could get stuck showing stale/zero counts
+  once its session baseline was established). The tradeoff is the same one
+  that logic existed to fix — sub-agent and nested-repo edits won't be
+  reflected — but the figure now always matches what Claude Code itself
+  reports, updates every render, and has no caching layer to go stale.
+
 ## 2.0.0 — 17/07/2026
 
 Large upgrade adopting ideas from [claude-hud](https://github.com/jarrodwatts/claude-hud)
