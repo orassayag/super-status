@@ -1162,7 +1162,7 @@ SUBSCRIPTION_START_RAW=""
 resolve_subscription_start_date() {
     local _file _raw
     for _file in "${git_root:+$git_root/CLAUDE.md}" "$HOME/.claude/CLAUDE.md"; do
-        [ -n "$_file" ] && [ -f "$_file" ] || continue
+        { [ -n "$_file" ] && [ -f "$_file" ]; } || continue
         _raw=$(grep -o '"subscription_start_date"[[:space:]]*:[[:space:]]*"[^"]*"' "$_file" 2>/dev/null | head -n1)
         [ -z "$_raw" ] && continue
         _raw=$(printf '%s' "$_raw" | sed 's/.*:[[:space:]]*"\([^"]*\)"$/\1/')
