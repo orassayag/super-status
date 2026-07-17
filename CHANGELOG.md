@@ -19,6 +19,14 @@
 - **Bars are 10 cells (was 20), bracket-less, and bar-first** (`bar NN%` instead of
   `NN% [bar]`) — every bar on every line is the same width, so stacked bars and their
   `%` values align in a column. `bar_width` in config still overrides.
+- **Bar glyph defaults are now `▐`/`▒`** (segmented block bar, was `#`/`-`), and the
+  empty portion renders muted gray instead of the usage color — the colored part of
+  the bar is the signal, the remainder is just scale. Both glyphs remain configurable
+  (`"#"`/`"-"` for ASCII-only terminals).
+- **"Healthy"/accent green is a fixed teal-mint (256-color)** instead of the terminal
+  theme's palette green, and the warm accent (`Cost` value, todo marker, `×N` counts)
+  is orange instead of palette yellow — matching the redesign mock across terminal
+  themes rather than inheriting whatever the theme maps ANSI green/yellow to.
 - **Reset strings shortened** — bare countdowns (`Reset 2h30m`, not
   `(Reset: 2h30m [12:40])`); only the weekly reset appends its absolute `dd/MM/yyyy`
   date, and only when it's more than a day out.

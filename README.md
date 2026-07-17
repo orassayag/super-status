@@ -89,8 +89,8 @@ super-status prints a compact, visually hierarchical layout: one identity line, 
 
 ```
 ◆ Claude Sonnet 4.6 | repo:master | +45 -12 | v2.1.90
-Sub ######---- 62% Reset 14d | 5h #########- 99% Reset 2h30m | 3d ####------ 44% Reset 3d14h10m [21/07/2026]
-Ctx ####------ 42% 84k/200k | Cache 71% | Cost est. $1.23 | Tok 152.3k/45.2k
+Sub ▐▐▐▐▐▐▒▒▒▒ 62% Reset 14d | 5h ▐▐▐▐▐▐▐▐▐▒ 99% Reset 2h30m | 3d ▐▐▐▐▒▒▒▒▒▒ 44% Reset 3d14h10m [21/07/2026]
+Ctx ▐▐▐▐▒▒▒▒▒▒ 42% 84k/200k | Cache 71% | Cost est. $1.23 | Tok 152.3k/45.2k
 LOC ~14.2k | Session 1h30m | Thinking 1m38s | Eff A(100) | Calls 9 (Bash 1, Read 3, Code 3, Skill 1, Other 1)
 ```
 
@@ -116,7 +116,7 @@ The `Sub` bar needs a one-time setup step — see **Subscription tracking setup*
 
 ```
 ◆ Claude Sonnet 4.6 | repo:master | +45 -12 | v2.1.90
-Ctx ####------ 42% 84k/200k | Cache 71% | Cost $3.42 | Tok 152.3k/45.2k
+Ctx ▐▐▐▐▒▒▒▒▒▒ 42% 84k/200k | Cache 71% | Cost $3.42 | Tok 152.3k/45.2k
 LOC ~14.2k | Session 1h30m | Thinking 1m38s | Eff A(100) | Calls 9 (Bash 1, Read 3, Code 3, Skill 1, Other 1)
 ```
 
@@ -126,8 +126,8 @@ On a non-Anthropic backend (e.g. z.ai), the model segment carries an explicit pr
 
 ```
 ◆ anthropic/claude-sonnet-4.6 [OpenRouter] | repo:master | +45 -12 | v2.1.90
-Bal ##-------- 17% $16.58/$20.00
-Ctx ####------ 42% 84k/200k | Cost $3.42 | Tok 152.3k/45.2k
+Bal ▐▐▒▒▒▒▒▒▒▒ 17% $16.58/$20.00
+Ctx ▐▐▐▐▒▒▒▒▒▒ 42% 84k/200k | Cost $3.42 | Tok 152.3k/45.2k
 LOC ~14.2k | Session 1h30m | Thinking 1m38s | Eff A(100) | Calls 12 (Bash 3, Read 2, Code 4, Skill 1, MCP 2)
 ```
 
@@ -155,8 +155,8 @@ A malformed config never breaks the render — defaults are used and a one-line 
   "language": "en",
   "layout": "expanded",
   "bar_width": 10,
-  "bar_filled": "#",
-  "bar_empty": "-",
+  "bar_filled": "▐",
+  "bar_empty": "▒",
   "path_levels": 1,
   "max_width": 0,
   "context_value": "both",
@@ -192,7 +192,7 @@ A malformed config never breaks the render — defaults are used and a one-line 
 | `language` | Label language. Only `en` ships; all labels live in one block in the script, so adding a language is one `case` branch |
 | `layout` | `expanded` (the default multi-line layout) or `compact` (3 lines for small panes — see **Compact layout** below) |
 | `bar_width` | Progress-bar width in glyphs (5–60). The default `10` keeps every bar the same width so stacked bars align in a column |
-| `bar_filled` / `bar_empty` | Bar glyphs — e.g. `"█"` / `"░"` |
+| `bar_filled` / `bar_empty` | Bar glyphs. The defaults (`"▐"` / `"▒"`) give a segmented block bar; set e.g. `"█"` / `"░"` for a solid bar, or `"#"` / `"-"` for ASCII-only terminals |
 | `path_levels` | How many trailing path components the repo location shows (1–5). `2` turns `client:main` into `acme/client:main`, disambiguating same-named folders |
 | `max_width` | Truncate each line to this display width with a trailing `…` (ANSI- and UTF-8-aware). `0` = only truncate when `$COLUMNS` is exported to the script |
 | `context_value` | What renders on the `Ctx` segment next to the bar: `percent`, `tokens`, `remaining` (tokens left before auto-compact — uses Claude Code's own `remaining_percentage` when present), or `both` |
@@ -210,8 +210,8 @@ A malformed config never breaks the render — defaults are used and a one-line 
 ```
 
 ```
-◆ Claude Sonnet 4.6 | repo:master | Ctx ####------ 42% 84k/200k
-Sub ######---- 62% Reset 14d | 5h #########- 99% Reset 2h30m | 3d ####------ 44% Reset 3d14h10m [21/07/2026] | Cost est. $1.23
+◆ Claude Sonnet 4.6 | repo:master | Ctx ▐▐▐▐▒▒▒▒▒▒ 42% 84k/200k
+Sub ▐▐▐▐▐▐▒▒▒▒ 62% Reset 14d | 5h ▐▐▐▐▐▐▐▐▐▒ 99% Reset 2h30m | 3d ▐▐▐▐▒▒▒▒▒▒ 44% Reset 3d14h10m [21/07/2026] | Cost est. $1.23
 Activity: ◐ Edit: auth.ts | ✓ Read ×3 | ✓ Grep ×2
 ```
 
@@ -266,10 +266,10 @@ To make the time fields update continuously instead of only on those events, add
 
 | Field | Example                                | Meaning                                                                                                                                                                                                                              |
 | ----- | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `Sub` | `######---- 62% Reset 14d`              | How far through your current monthly billing cycle you are, with days remaining until renewal (rounded up). Cycles are true calendar months from your declared start date (14/07 renews on 14/08 — 28–31 days depending on the month; a start day missing from a shorter month, e.g. the 31st, clamps to that month's last day). Green early in the cycle, orange mid-cycle, red in the final ~2 days — informational progress, not a rate-limit warning. Requires the one-time setup in **Subscription tracking setup** below; until then a bold red reminder line appears at the very top instead |
-| `5h`  | `#########- 99% Reset 2h30m`            | % of your rolling 5-hour Anthropic plan limit used, a usage bar colored to match, and the countdown until reset                                                                                                                       |
-| `Nd`  | `3d ####------ 44% Reset 3d14h10m [21/07/2026]` | % of your rolling weekly Anthropic plan limit used. `N` is computed live — the actual number of days from now until the reset (rounded up) — not hardcoded to 7, since this window is rolling and doesn't always land exactly a week out. The absolute `dd/MM/yyyy` reset date is appended only when the reset is more than a day out |
-| `Bal` | `##-------- 17% $16.58/$20.00`          | (OpenRouter mode only) live remaining/total credit balance from OpenRouter's `/api/v1/credits` endpoint, bar and % colored to match usage                                                                                             |
+| `Sub` | `▐▐▐▐▐▐▒▒▒▒ 62% Reset 14d`              | How far through your current monthly billing cycle you are, with days remaining until renewal (rounded up). Cycles are true calendar months from your declared start date (14/07 renews on 14/08 — 28–31 days depending on the month; a start day missing from a shorter month, e.g. the 31st, clamps to that month's last day). Green early in the cycle, orange mid-cycle, red in the final ~2 days — informational progress, not a rate-limit warning. Requires the one-time setup in **Subscription tracking setup** below; until then a bold red reminder line appears at the very top instead |
+| `5h`  | `▐▐▐▐▐▐▐▐▐▒ 99% Reset 2h30m`            | % of your rolling 5-hour Anthropic plan limit used, a usage bar colored to match, and the countdown until reset                                                                                                                       |
+| `Nd`  | `3d ▐▐▐▐▒▒▒▒▒▒ 44% Reset 3d14h10m [21/07/2026]` | % of your rolling weekly Anthropic plan limit used. `N` is computed live — the actual number of days from now until the reset (rounded up) — not hardcoded to 7, since this window is rolling and doesn't always land exactly a week out. The absolute `dd/MM/yyyy` reset date is appended only when the reset is more than a day out |
+| `Bal` | `▐▐▒▒▒▒▒▒▒▒ 17% $16.58/$20.00`          | (OpenRouter mode only) live remaining/total credit balance from OpenRouter's `/api/v1/credits` endpoint, bar and % colored to match usage                                                                                             |
 
 Colors: green = healthy, orange = getting close, red = at/near the limit (the weekly window uses tighter thresholds than 5-hour, since a blown weekly quota is more disruptive than a 5-hour one that resets soon — both are configurable). A percentage above 100% can happen (see **Live updates** above) — it's shown as-is rather than clamped, though the bar itself always reads as full.
 
@@ -277,7 +277,7 @@ Colors: green = healthy, orange = getting close, red = at/near the limit (the we
 
 | Field      | Example                                 | Meaning                                                                                          |
 | ---------- | ---------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| `Ctx` | `##-------- 14% 28k/200k` | How full the context window is, with a usage-colored bar. Which value(s) render next to the bar is configurable via `context_value` — `percent`, `tokens`, `remaining` (`154k left` — often the most actionable number late in a session), or `both` |
+| `Ctx` | `▐▐▒▒▒▒▒▒▒▒ 14% 28k/200k` | How full the context window is, with a usage-colored bar. Which value(s) render next to the bar is configurable via `context_value` — `percent`, `tokens`, `remaining` (`154k left` — often the most actionable number late in a session), or `both` |
 | `Cache` | `71%` | How much of your current context came from cache reuse vs. fresh tokens. Higher = cheaper/more efficient session. Muted — informational, not actionable |
 | `Cost` / `Cost est.` | `$0.14`                    | Session cost in USD, always computed at standard API list rates. On API-key/OpenRouter mode this is real spend, labeled `Cost`. On subscription mode you pay a flat monthly fee regardless, so the same number is only an API-equivalent estimate of what the session *would* have cost — labeled `Cost est.` to make that explicit |
 | `Tok`  | `152.3k/45.2k`            | Cumulative input/output tokens for the **whole session** (`in/out`) — unlike the `Ctx` figure, this doesn't reset after `/compact`. Both figures are computed by super-status itself, by summing every assistant message's usage fields out of the session transcript (input + cache-creation + cache-read tokens for `in`, output tokens for `out`), rather than trusted straight from Claude Code's own JSON — its `total_input_tokens` is unreliable early in a session and `total_output_tokens` only reflects the *last* exchange rather than a running total. Cached per `session_id`, re-parsed only when the transcript file's mtime changes. Empty until after your first message exchange (see **Live updates**) |
@@ -349,7 +349,7 @@ SUBSCRIPTION START DATE IS MISSING - ADD IT TO THE CLAUDE.MD: "subscription_star
 **Once a valid date is found**, the warning disappears and the `Sub` bar renders at the start of the usage-bar line:
 
 ```
-Sub ######---- 62% Reset 14d
+Sub ▐▐▐▐▐▐▒▒▒▒ 62% Reset 14d
 ```
 
 This whole feature is subscription-mode only — API-key and OpenRouter users have no monthly cycle to track, so for them there's no warning, no bar, and no CLAUDE.md reads at all.

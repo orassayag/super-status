@@ -18,13 +18,15 @@ export LC_NUMERIC=C
 # ---------------------------------------------------------------------------
 RESET=$'\033[0m'
 CYAN=$'\033[36m'
-GREEN=$'\033[32m'
+# Teal-mint (256-color), not ANSI green — "healthy" and the identity accent
+# share this one tone per the redesign, instead of the terminal theme's
+# (often much brighter) palette green.
+GREEN=$'\033[38;5;43m'
 GREY=$'\033[90m'
 WHITE=$'\033[37m'
 RED=$'\033[31m'
 BOLD_RED=$'\033[1;31m'
 ORANGE=$'\033[38;5;208m'
-YELLOW=$'\033[33m'
 
 # ---------------------------------------------------------------------------
 # Config defaults — a missing/empty config.json yields exactly these, which
@@ -35,8 +37,8 @@ YELLOW=$'\033[33m'
 cfg_language="en"
 cfg_layout="expanded"
 cfg_bar_width=10
-cfg_bar_filled="#"
-cfg_bar_empty="-"
+cfg_bar_filled="▐"
+cfg_bar_empty="▒"
 cfg_path_levels=1
 cfg_max_width=0
 cfg_context_value="both"
@@ -331,11 +333,9 @@ render_bar() {
     local ne=$(( cfg_bar_width - nf )) fstr="" estr="" i
     for (( i = 0; i < nf; i++ )); do fstr+="$cfg_bar_filled"; done
     for (( i = 0; i < ne; i++ )); do estr+="$cfg_bar_empty"; done
-    if [ -z "$C_BAR_FILLED" ] && [ -z "$C_BAR_EMPTY" ]; then
-        printf '%s' "${outer}${fstr}${estr}${RESET}"
-    else
-        printf '%s' "${C_BAR_FILLED:-$outer}${fstr}${RESET}${C_BAR_EMPTY:-$outer}${estr}${RESET}"
-    fi
+    # Empty cells default to muted gray, not the usage color — the colored
+    # part of the bar is the signal; the remainder is just scale.
+    printf '%s' "${C_BAR_FILLED:-$outer}${fstr}${RESET}${C_BAR_EMPTY:-$C_MUTED}${estr}${RESET}"
 }
 
 # Muted-gray wrapper — the one place the "informational, not actionable"
@@ -513,7 +513,7 @@ fi
 # The model accent is the same green as "healthy" bar values on purpose —
 # identity/accent and healthy read as one color family, per the redesign.
 C_LABEL="$WHITE"; C_MODEL="$GREEN"; C_REPO="$WHITE"; C_BRANCH="$WHITE"
-C_MUTED="$GREY"; C_ACCENT="$YELLOW"; C_BAR_FILLED=""; C_BAR_EMPTY=""
+C_MUTED="$GREY"; C_ACCENT="$ORANGE"; C_BAR_FILLED=""; C_BAR_EMPTY=""
 _c=$(resolve_color "$cfg_color_label") && C_LABEL="$_c"
 _c=$(resolve_color "$cfg_color_model") && C_MODEL="$_c"
 _c=$(resolve_color "$cfg_color_repo") && C_REPO="$_c"
