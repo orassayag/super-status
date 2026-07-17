@@ -8,7 +8,7 @@
     {
       "name": "super-status",
       "source": "./",
-      "description": "Combined Claude Code statusline — identity, context usage, session quality, plan-limit tracking, live activity, subagents, todos, and /orca-/master wave state in labeled lines."
+      "description": "Combined Claude Code statusline \u2014 identity, context usage, session quality, plan-limit tracking, live activity, subagents, todos, and /orca-/master wave state in a compact, visually hierarchical layout."
     }
   ]
 }

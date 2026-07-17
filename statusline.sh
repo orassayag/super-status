@@ -19,7 +19,6 @@ export LC_NUMERIC=C
 RESET=$'\033[0m'
 CYAN=$'\033[36m'
 GREEN=$'\033[32m'
-MAGENTA=$'\033[35m'
 GREY=$'\033[90m'
 WHITE=$'\033[37m'
 RED=$'\033[31m'
@@ -35,7 +34,7 @@ YELLOW=$'\033[33m'
 # ---------------------------------------------------------------------------
 cfg_language="en"
 cfg_layout="expanded"
-cfg_bar_width=20
+cfg_bar_width=10
 cfg_bar_filled="#"
 cfg_bar_empty="-"
 cfg_path_levels=1
@@ -92,7 +91,7 @@ cfg_color_bar_empty=""
 # Layout presets: lines separated by "|", segments within a line by ",".
 # A custom "lines" array in config.json overrides either preset, which is how
 # element reordering and merging elements onto shared lines is expressed.
-LAYOUT_EXPANDED="model,repo,branch,worktree,lines_changed,version|subscription|sessions,balance|context,cost,total_tokens|loc,session_time,thinking_time|cache_ratio,efficiency|tool_calls|activity|agents|todos|orchestrator"
+LAYOUT_EXPANDED="model,repo,branch,worktree,lines_changed,version|subscription,sessions,balance|context,cache_ratio,cost,total_tokens|loc,session_time,thinking_time,efficiency,tool_calls|activity|agents|todos|orchestrator"
 LAYOUT_COMPACT="model,repo,branch,worktree,context|subscription,sessions,balance,cost|activity,agents,todos,orchestrator"
 
 # ---------------------------------------------------------------------------
@@ -239,22 +238,8 @@ usage_color() {
     fi
 }
 
-# HH:MM only — used for the 5-hour reset, since it always falls within the same day.
-format_time_epoch() {
-    local epoch="$1"
-    is_num "$epoch" || { echo ""; return; }
-    date -d "@${epoch%.*}" +"%H:%M" 2>/dev/null || date -r "${epoch%.*}" +"%H:%M" 2>/dev/null || echo ""
-}
-
-# dd/MM/yyyy HH:MM — used for the 7-day reset and the bottom-line timestamp,
-# since those can land on a different day than "today".
-format_datetime_epoch() {
-    local epoch="$1"
-    is_num "$epoch" || { echo ""; return; }
-    date -d "@${epoch%.*}" +"%d/%m/%Y %H:%M" 2>/dev/null || date -r "${epoch%.*}" +"%d/%m/%Y %H:%M" 2>/dev/null || echo ""
-}
-
-# dd/MM/yyyy only — used for the subscription cycle renewal date.
+# dd/MM/yyyy only — used for the subscription cycle renewal date and the
+# weekly reset date.
 format_date_epoch() {
     local epoch="$1"
     is_num "$epoch" || { echo ""; return; }
@@ -330,9 +315,10 @@ make_bar() {
     printf '%s' "$out"
 }
 
-# Colored "[bar]" unit: $1 pct, $2 outer/usage color. Per-part color overrides
-# only add escape sequences when actually configured, so the default output
-# stays byte-identical to the pre-config format.
+# Colored bar unit (no brackets — every bar on every line is the same
+# cfg_bar_width cells, so stacked bars align in a column): $1 pct, $2
+# outer/usage color. Per-part color overrides only add escape sequences when
+# actually configured.
 render_bar() {
     local pct="$1" outer="$2"
     is_num "$pct" || pct=0
@@ -346,10 +332,16 @@ render_bar() {
     for (( i = 0; i < nf; i++ )); do fstr+="$cfg_bar_filled"; done
     for (( i = 0; i < ne; i++ )); do estr+="$cfg_bar_empty"; done
     if [ -z "$C_BAR_FILLED" ] && [ -z "$C_BAR_EMPTY" ]; then
-        printf '%s' "${outer}[${fstr}${estr}]${RESET}"
+        printf '%s' "${outer}${fstr}${estr}${RESET}"
     else
-        printf '%s' "${outer}[${C_BAR_FILLED:-$outer}${fstr}${C_BAR_EMPTY:-$outer}${estr}${RESET}${outer}]${RESET}"
+        printf '%s' "${C_BAR_FILLED:-$outer}${fstr}${RESET}${C_BAR_EMPTY:-$outer}${estr}${RESET}"
     fi
+}
+
+# Muted-gray wrapper — the one place the "informational, not actionable"
+# color is applied, so those fields can never drift onto warning colors.
+muted() {
+    printf '%s%s%s' "$C_MUTED" "$1" "$RESET"
 }
 
 # Last $2 components of path $1, joined by "/" — pathLevels support.
@@ -518,7 +510,9 @@ if [ -f "$CONFIG_FILE" ]; then
 fi
 
 # Element colors: built-in defaults, overridable per element from config.
-C_LABEL="$WHITE"; C_MODEL="$CYAN"; C_REPO="$GREEN"; C_BRANCH="$MAGENTA"
+# The model accent is the same green as "healthy" bar values on purpose —
+# identity/accent and healthy read as one color family, per the redesign.
+C_LABEL="$WHITE"; C_MODEL="$GREEN"; C_REPO="$WHITE"; C_BRANCH="$WHITE"
 C_MUTED="$GREY"; C_ACCENT="$YELLOW"; C_BAR_FILLED=""; C_BAR_EMPTY=""
 _c=$(resolve_color "$cfg_color_label") && C_LABEL="$_c"
 _c=$(resolve_color "$cfg_color_model") && C_MODEL="$_c"
@@ -535,33 +529,33 @@ _c=$(resolve_color "$cfg_color_bar_empty") && C_BAR_EMPTY="$_c"
 # ---------------------------------------------------------------------------
 case "$cfg_language" in
     en|*)
-        L_MODEL="Model:"
-        L_REPO="Repo:"
-        L_BRANCH="Branch:"
-        L_WORKTREE="Worktree:"
-        L_LINES_CHANGED="Lines Changes:"
-        L_VERSION="Claude Version:"
-        L_SUBSCRIPTION="Subscription:"
-        L_SESSIONS="Sessions:"
-        L_BALANCE="Balance:"
-        L_CONTEXT="Context:"
-        L_COST="Cost:"
-        L_COST_EST="Cost (est.):"
-        L_TOTAL_TOKENS="Total Tokens:"
-        L_LOC="Lines of code in project:"
-        L_SESSION_TIME="Total Session Time:"
-        L_THINKING="Total thinking time:"
-        L_CACHE_RATIO="Cache Vs Tokens:"
-        L_EFFICIENCY="Efficiency Grade (A–F):"
-        L_TOOL_CALLS="Tool Calls"
+        L_MODEL="◆"
+        L_SUBSCRIPTION="Sub"
+        L_FIVE_HOUR="5h"
+        L_BALANCE="Bal"
+        L_CONTEXT="Ctx"
+        L_COST="Cost"
+        L_COST_EST="Cost est."
+        L_TOTAL_TOKENS="Tok"
+        L_LOC="LOC"
+        L_SESSION_TIME="Session"
+        L_THINKING="Thinking"
+        L_CACHE_RATIO="Cache"
+        L_EFFICIENCY="Eff"
+        L_TOOL_CALLS="Calls"
+        L_BUCKET_SKILLS="Skill"
+        L_BUCKET_CODE="Code"
+        L_BUCKET_COMMANDS="Bash"
+        L_BUCKET_READ="Read"
+        L_BUCKET_MCP="MCP"
+        L_BUCKET_OTHER="Other"
         L_ACTIVITY="Activity:"
         L_AGENTS="Agents:"
         L_TODO="Todo:"
         L_ORCA="Orca:"
         L_MASTER="Master:"
-        L_RESET="Reset:"
+        L_RESET="Reset"
         L_LEFT="left"
-        L_USED="used"
         L_SUB_MISSING='SUBSCRIPTION START DATE IS MISSING - ADD IT TO THE CLAUDE.MD: "subscription_start_date": "dd/MM/yyyy"'
         L_SUB_INVALID='SUBSCRIPTION START DATE IS INVALID - ADD IT TO THE CLAUDE.MD: "subscription_start_date": "dd/MM/yyyy"'
         ;;
@@ -1200,7 +1194,6 @@ if [ "$IS_SUBSCRIPTION" -eq 1 ] && [ "$cfg_show_subscription" = "1" ]; then
                 # Ceiling division, same rounding convention as the weekly reset label
                 _sub_days_left=$(( (_cycle_end - _sub_now + 86399) / 86400 ))
                 [ "$_sub_days_left" -lt 0 ] && _sub_days_left=0
-                _sub_reset_date=$(format_date_epoch "$_cycle_end")
                 # Informational progress coloring, not a rate-limit warning:
                 # green early, orange mid-cycle, red in the final ~2 days.
                 if [ "$_sub_days_left" -le 2 ]; then _sub_color="$RED"
@@ -1208,7 +1201,7 @@ if [ "$IS_SUBSCRIPTION" -eq 1 ] && [ "$cfg_show_subscription" = "1" ]; then
                 else _sub_color="$GREEN"
                 fi
                 _sub_bar=$(render_bar "$_sub_pct" "$_sub_color")
-                subscription_value="${_sub_color}${_sub_pct}%${RESET} ${_sub_bar} ${C_MUTED}(${L_RESET} ${_sub_days_left}d [${_sub_reset_date}])${RESET}"
+                subscription_value="${_sub_bar} ${_sub_color}${_sub_pct}%${RESET} $(muted "${L_RESET} ${_sub_days_left}d")"
             fi
             ;;
     esac
@@ -1222,31 +1215,27 @@ fi
 
 seg_model=""
 if [ "$cfg_show_model" = "1" ] && [ -n "$model" ]; then
-    seg_model="${C_LABEL}${L_MODEL}${RESET} ${C_MODEL}${model}${RESET}"
-    [ -n "$provider_badge" ] && seg_model="${seg_model} ${C_MUTED}[${provider_badge}]${RESET}"
+    seg_model="${C_MODEL}${L_MODEL} ${model}${RESET}"
+    [ -n "$provider_badge" ] && seg_model="${seg_model} $(muted "[${provider_badge}]")"
 fi
 
-seg_repo=""
-if [ "$cfg_show_repo" = "1" ] && [ -n "$project_dir" ]; then
-    _repo_display=$(path_tail "$project_dir" "$cfg_path_levels")
-    [ -n "$_repo_display" ] && seg_repo="${C_LABEL}${L_REPO}${RESET} ${C_REPO}${_repo_display}${RESET}"
-fi
-
-seg_branch=""
+# Branch decorations (dirty marker, ahead/behind, file stats) build once here;
+# they attach to the branch wherever it ends up rendering (combined or alone).
+_branch_part=""
 if [ "$cfg_show_branch" = "1" ] && [ -n "$git_branch" ]; then
     _branch_display="$git_branch"
     [ "$cfg_show_git_dirty" = "1" ] && [ "$git_dirty" = "1" ] && _branch_display="${_branch_display}*"
-    seg_branch="${C_LABEL}${L_BRANCH}${RESET} ${C_BRANCH}${_branch_display}${RESET}"
+    _branch_part="${C_BRANCH}${_branch_display}${RESET}"
     if [ "$cfg_show_git_ahead_behind" = "1" ]; then
         if is_num "$git_ahead" && [ "$git_ahead" -gt 0 ]; then
             if [ "$git_ahead" -ge "$cfg_push_critical" ]; then _ab_color="$RED"
             elif [ "$git_ahead" -ge "$cfg_push_warning" ]; then _ab_color="$ORANGE"
             else _ab_color="$GREEN"
             fi
-            seg_branch="${seg_branch} ${_ab_color}↑${git_ahead}${RESET}"
+            _branch_part="${_branch_part} ${_ab_color}↑${git_ahead}${RESET}"
         fi
         if is_num "$git_behind" && [ "$git_behind" -gt 0 ]; then
-            seg_branch="${seg_branch} ${C_MUTED}↓${git_behind}${RESET}"
+            _branch_part="${_branch_part} $(muted "↓${git_behind}")"
         fi
     fi
     if [ "$cfg_show_git_file_stats" = "1" ]; then
@@ -1254,13 +1243,31 @@ if [ "$cfg_show_branch" = "1" ] && [ -n "$git_branch" ]; then
         is_num "$git_modified" && [ "$git_modified" -gt 0 ] && _stats="${_stats}${_stats:+ }!${git_modified}"
         is_num "$git_staged" && [ "$git_staged" -gt 0 ] && _stats="${_stats}${_stats:+ }+${git_staged}"
         is_num "$git_untracked" && [ "$git_untracked" -gt 0 ] && _stats="${_stats}${_stats:+ }?${git_untracked}"
-        [ -n "$_stats" ] && seg_branch="${seg_branch} ${C_MUTED}${_stats}${RESET}"
+        [ -n "$_stats" ] && _branch_part="${_branch_part} $(muted "${_stats}")"
     fi
 fi
 
-seg_worktree=""
+_worktree_part=""
 if [ "$cfg_show_worktree" = "1" ] && [ -n "$worktree" ]; then
-    seg_worktree="${C_LABEL}${L_WORKTREE}${RESET} ${C_BRANCH}${worktree}${RESET}"
+    _worktree_part="${C_BRANCH}${worktree}${RESET}"
+fi
+
+# Location renders as one "repo:branch/worktree" token. When the repo part is
+# hidden/absent, branch and worktree fall back to their own segments so a
+# custom layout or the minimal preset still shows them.
+seg_repo=""; seg_branch=""; seg_worktree=""
+_repo_part=""
+if [ "$cfg_show_repo" = "1" ] && [ -n "$project_dir" ]; then
+    _repo_display=$(path_tail "$project_dir" "$cfg_path_levels")
+    [ -n "$_repo_display" ] && _repo_part="${C_REPO}${_repo_display}${RESET}"
+fi
+if [ -n "$_repo_part" ]; then
+    seg_repo="$_repo_part"
+    [ -n "$_branch_part" ] && seg_repo="${seg_repo}:${_branch_part}"
+    [ -n "$_worktree_part" ] && seg_repo="${seg_repo}/${_worktree_part}"
+else
+    seg_branch="$_branch_part"
+    seg_worktree="$_worktree_part"
 fi
 
 # Straight from Claude Code's own cost.total_lines_added/removed — this only
@@ -1269,22 +1276,24 @@ fi
 seg_lines_changed=""
 if [ "$cfg_show_lines_changed" = "1" ]; then
     if [ "$la" -gt 0 ] || [ "$lr" -gt 0 ]; then
-        seg_lines_changed="${C_LABEL}${L_LINES_CHANGED}${RESET} ${GREEN}+${la}${RESET} ${RED}-${lr}${RESET}"
+        seg_lines_changed="${GREEN}+${la}${RESET} ${RED}-${lr}${RESET}"
     fi
 fi
 
 seg_version=""
 if [ "$cfg_show_version" = "1" ] && [ -n "$cc_version" ]; then
-    seg_version="${C_LABEL}${L_VERSION}${RESET} ${C_MUTED}v${cc_version}${RESET}"
+    seg_version="$(muted "v${cc_version}")"
 fi
 
 seg_subscription="$subscription_value"
 [ -n "$seg_subscription" ] && seg_subscription="${C_LABEL}${L_SUBSCRIPTION}${RESET} ${seg_subscription}"
 
-# Sessions: 5h / Nd usage with reset time-left + clock (Nd = actual days
-# remaining until the weekly window resets, computed live — not hardcoded to
-# "7d", since it's a rolling window). Bars are colored to match their usage
-# color (green/orange/red), not a flat blue.
+# Sessions: 5h / Nd usage (Nd = actual days remaining until the weekly window
+# resets, computed live — not hardcoded to "7d", since it's a rolling window).
+# Bars are colored to match their usage color (green/orange/red). Reset
+# strings are the bare countdown; only the weekly reset appends its absolute
+# date, and only once it's more than a day out (a same-day reset's countdown
+# already says everything).
 seg_sessions=""
 if [ "$IS_SUBSCRIPTION" -eq 1 ] && [ "$cfg_show_sessions" = "1" ]; then
     five_pct=${five_util_probe%.*}; is_num "$five_pct" || five_pct=0
@@ -1296,34 +1305,32 @@ if [ "$IS_SUBSCRIPTION" -eq 1 ] && [ "$cfg_show_sessions" = "1" ]; then
     five_bar=$(render_bar "$five_pct" "$five_color")
     seven_bar=$(render_bar "$seven_pct" "$seven_color")
 
-    five_reset_clock=$(format_time_epoch "$five_reset")
     five_reset_countdown=$(fmt_countdown_epoch "$five_reset")
-    seven_reset_clock=$(format_datetime_epoch "$seven_reset")
     seven_reset_countdown=$(fmt_countdown_epoch "$seven_reset")
+    seven_reset_date=$(format_date_epoch "$seven_reset")
 
     seven_days_label="7d"
+    _seven_days_left=""
     seven_reset_int=${seven_reset%.*}
     if is_num "$seven_reset_int"; then
         now_epoch=$(date +%s)
         _diff=$(( seven_reset_int - now_epoch ))
         [ "$_diff" -lt 0 ] && _diff=0
         # Ceiling division: partial days round up (e.g. 18h left -> "1d", 4.2 days -> "5d")
-        _days_left=$(( (_diff + 86399) / 86400 ))
-        seven_days_label="${_days_left}d"
+        _seven_days_left=$(( (_diff + 86399) / 86400 ))
+        seven_days_label="${_seven_days_left}d"
     fi
 
-    seg_sessions="${C_LABEL}${L_SESSIONS}${RESET} ${C_ACCENT}5h:${RESET} ${five_color}${five_pct}%${RESET} ${five_bar}"
-    if [ -n "$five_reset_countdown" ] && [ -n "$five_reset_clock" ]; then
-        seg_sessions="${seg_sessions} ${C_MUTED}(${L_RESET} ${five_reset_countdown} [${five_reset_clock}])${RESET}"
-    elif [ -n "$five_reset_clock" ]; then
-        seg_sessions="${seg_sessions} ${C_MUTED}(${L_RESET} ${five_reset_clock})${RESET}"
-    fi
+    seg_sessions="${C_LABEL}${L_FIVE_HOUR}${RESET} ${five_bar} ${five_color}${five_pct}%${RESET}"
+    [ -n "$five_reset_countdown" ] && seg_sessions="${seg_sessions} $(muted "${L_RESET} ${five_reset_countdown}")"
 
-    seg_sessions="${seg_sessions} | ${C_ACCENT}${seven_days_label}:${RESET} ${seven_color}${seven_pct}%${RESET} ${seven_bar}"
-    if [ -n "$seven_reset_countdown" ] && [ -n "$seven_reset_clock" ]; then
-        seg_sessions="${seg_sessions} ${C_MUTED}(${L_RESET} ${seven_reset_countdown} [${seven_reset_clock}])${RESET}"
-    elif [ -n "$seven_reset_clock" ]; then
-        seg_sessions="${seg_sessions} ${C_MUTED}(${L_RESET} ${seven_reset_clock})${RESET}"
+    seg_sessions="${seg_sessions} $(muted "|") ${C_LABEL}${seven_days_label}${RESET} ${seven_bar} ${seven_color}${seven_pct}%${RESET}"
+    if [ -n "$seven_reset_countdown" ]; then
+        _seven_reset="${L_RESET} ${seven_reset_countdown}"
+        if [ -n "$seven_reset_date" ] && is_num "$_seven_days_left" && [ "$_seven_days_left" -gt 1 ]; then
+            _seven_reset="${_seven_reset} [${seven_reset_date}]"
+        fi
+        seg_sessions="${seg_sessions} $(muted "${_seven_reset}")"
     fi
 fi
 
@@ -1357,7 +1364,7 @@ if [ "$IS_OPENROUTER" -eq 1 ] && [ "$cfg_show_balance" = "1" ] && [ -n "$OPENROU
             or_used_pct=$(awk "BEGIN{ if ($or_total > 0) printf \"%.0f\", ($or_used/$or_total)*100; else print 0 }")
             or_color=$(usage_color "$or_used_pct" "$cfg_5h_warn" "$cfg_5h_crit")
             or_bar=$(render_bar "$or_used_pct" "$or_color")
-            seg_balance="${C_LABEL}${L_BALANCE}${RESET} ${or_color}\$$(printf "%.2f" "$or_remaining") / \$$(printf "%.2f" "$or_total")${RESET} ${or_bar} ${or_color}${or_used_pct}% ${L_USED}${RESET}"
+            seg_balance="${C_LABEL}${L_BALANCE}${RESET} ${or_bar} ${or_color}${or_used_pct}%${RESET} $(muted "\$$(printf "%.2f" "$or_remaining")/\$$(printf "%.2f" "$or_total")")"
         fi
     fi
 fi
@@ -1369,16 +1376,16 @@ if [ "$cfg_show_context" = "1" ]; then
     _ctx_bar=$(render_bar "$pct" "$pct_color")
     case "$cfg_context_value" in
         percent)
-            seg_context="${C_LABEL}${L_CONTEXT}${RESET} ${pct_color}${pct}%${RESET} ${_ctx_bar}"
+            seg_context="${C_LABEL}${L_CONTEXT}${RESET} ${_ctx_bar} ${pct_color}${pct}%${RESET}"
             ;;
         tokens)
-            seg_context="${C_LABEL}${L_CONTEXT}${RESET} ${_ctx_bar} ${C_MUTED}(${token_used_k}k/${token_max_k}k)${RESET}"
+            seg_context="${C_LABEL}${L_CONTEXT}${RESET} ${_ctx_bar} $(muted "${token_used_k}k/${token_max_k}k")"
             ;;
         remaining)
-            seg_context="${C_LABEL}${L_CONTEXT}${RESET} ${_ctx_bar} ${C_MUTED}(${remaining_k}k ${L_LEFT})${RESET}"
+            seg_context="${C_LABEL}${L_CONTEXT}${RESET} ${_ctx_bar} $(muted "${remaining_k}k ${L_LEFT}")"
             ;;
         both|*)
-            seg_context="${C_LABEL}${L_CONTEXT}${RESET} ${pct_color}${pct}%${RESET} ${_ctx_bar} ${C_MUTED}(${token_used_k}k/${token_max_k}k)${RESET}"
+            seg_context="${C_LABEL}${L_CONTEXT}${RESET} ${_ctx_bar} ${pct_color}${pct}%${RESET} $(muted "${token_used_k}k/${token_max_k}k")"
             ;;
     esac
 fi
@@ -1390,29 +1397,29 @@ if [ "$cfg_show_cost" = "1" ] && is_num "$cost_usd"; then
     # an API-equivalent estimate. On API-key/OpenRouter mode it IS real spend.
     _cost_label="$L_COST"
     [ "$IS_SUBSCRIPTION" -eq 1 ] && _cost_label="$L_COST_EST"
-    seg_cost="${C_LABEL}${_cost_label}${RESET} ${C_ACCENT}\$$(printf "%.2f" "$cost_usd")${RESET}"
+    seg_cost="$(muted "${_cost_label}") ${C_ACCENT}\$$(printf "%.2f" "$cost_usd")${RESET}"
 fi
 
 seg_total_tokens=""
 if [ "$cfg_show_total_tokens" = "1" ] && is_num "$session_total_input" && is_num "$session_total_output"; then
     _in_fmt=$(fmt_tokens_k "$session_total_input")
     _out_fmt=$(fmt_tokens_k "$session_total_output")
-    seg_total_tokens="${C_LABEL}${L_TOTAL_TOKENS}${RESET} ${C_MUTED}${_in_fmt} in / ${_out_fmt} out${RESET}"
+    seg_total_tokens="$(muted "${L_TOTAL_TOKENS} ${_in_fmt}/${_out_fmt}")"
 fi
 
 seg_loc=""
 if [ -n "$loc_value" ]; then
-    seg_loc="${C_LABEL}${L_LOC}${RESET} ${C_MUTED}${loc_value}${RESET}"
+    seg_loc="$(muted "${L_LOC} ${loc_value}")"
 fi
 
 seg_session_time=""
 if [ "$cfg_show_session_time" = "1" ] && [ -n "$session_dur_value" ]; then
-    seg_session_time="${C_LABEL}${L_SESSION_TIME}${RESET} ${C_MUTED}${session_dur_value}${RESET}"
+    seg_session_time="$(muted "${L_SESSION_TIME} ${session_dur_value}")"
 fi
 
 seg_thinking_time=""
 if [ "$cfg_show_thinking_time" = "1" ] && [ -n "$thinking_value" ]; then
-    seg_thinking_time="${C_LABEL}${L_THINKING}${RESET} ${C_MUTED}${thinking_value}${RESET}"
+    seg_thinking_time="$(muted "${L_THINKING} ${thinking_value}")"
 fi
 
 # Cache ratio + efficiency grade.
@@ -1420,14 +1427,12 @@ fi
 # counting read-only tools dragged exploration-heavy sessions toward F even
 # when tool use was entirely appropriate. No edits yet -> the field is omitted
 # rather than showing a misleading F(0).
+# Cache % is deliberately muted, not threshold-colored: it's informational,
+# and warning colors are reserved for actionable fields.
 seg_cache_ratio=""
 if [ "$cfg_show_cache_ratio" = "1" ] && [ "$token_total" -gt 0 ]; then
     cache_ratio=$(( ${token_cr%.*} * 100 / token_total ))
-    if [ "$cache_ratio" -ge 75 ]; then cache_color="$GREEN"
-    elif [ "$cache_ratio" -ge 40 ]; then cache_color="$ORANGE"
-    else cache_color="$RED"
-    fi
-    seg_cache_ratio="${C_LABEL}${L_CACHE_RATIO}${RESET} ${cache_color}${cache_ratio}%${RESET}"
+    seg_cache_ratio="$(muted "${L_CACHE_RATIO} ${cache_ratio}%")"
 fi
 
 seg_efficiency=""
@@ -1437,21 +1442,25 @@ if [ "$cfg_show_efficiency" = "1" ] && is_num "$bucket_code" && [ "$bucket_code"
     [ "$eff_score" -gt 100 ] && eff_score=100
     eff_grade=$(grade_for "$eff_score")
     eff_color=$(grade_color "$eff_grade")
-    seg_efficiency="${C_LABEL}${L_EFFICIENCY}${RESET} ${eff_color}${eff_grade}(${eff_score})${RESET}"
+    seg_efficiency="$(muted "${L_EFFICIENCY}") ${eff_color}${eff_grade}(${eff_score})${RESET}"
 fi
 
-# All six buckets always print (zeros included) — it's a fixed, small
-# taxonomy, so a stable line shape beats the omit-if-zero convention used for
-# the open-ended fields elsewhere.
+# One consolidated diagnostics clause: total plus only the non-zero buckets
+# (the bucket sum still equals the total by construction — zero buckets are
+# just not spelled out anymore).
 seg_tool_calls=""
 if [ "$cfg_show_tool_calls" = "1" ] && is_num "$tool_calls_total" && [ "$tool_calls_total" -gt 0 ]; then
-    seg_tool_calls="${C_LABEL}${L_TOOL_CALLS} (${tool_calls_total}):${RESET}"
-    seg_tool_calls="${seg_tool_calls} ${CYAN}Skills:${RESET} ${C_ACCENT}${bucket_skills:-0}${RESET}"
-    seg_tool_calls="${seg_tool_calls} | ${CYAN}Code:${RESET} ${C_ACCENT}${bucket_code:-0}${RESET}"
-    seg_tool_calls="${seg_tool_calls} | ${CYAN}Commands:${RESET} ${C_ACCENT}${bucket_commands:-0}${RESET}"
-    seg_tool_calls="${seg_tool_calls} | ${CYAN}Read:${RESET} ${C_ACCENT}${bucket_read:-0}${RESET}"
-    seg_tool_calls="${seg_tool_calls} | ${CYAN}MCP Call:${RESET} ${C_ACCENT}${bucket_mcp:-0}${RESET}"
-    seg_tool_calls="${seg_tool_calls} | ${CYAN}Other:${RESET} ${C_ACCENT}${bucket_other:-0}${RESET}"
+    _buckets=""
+    for _bpair in "$L_BUCKET_COMMANDS:$bucket_commands" "$L_BUCKET_READ:$bucket_read" \
+                  "$L_BUCKET_CODE:$bucket_code" "$L_BUCKET_SKILLS:$bucket_skills" \
+                  "$L_BUCKET_MCP:$bucket_mcp" "$L_BUCKET_OTHER:$bucket_other"; do
+        _bcount="${_bpair##*:}"
+        is_num "$_bcount" && [ "$_bcount" -gt 0 ] || continue
+        _buckets="${_buckets}${_buckets:+, }${_bpair%%:*} ${_bcount}"
+    done
+    seg_tool_calls="${L_TOOL_CALLS} ${tool_calls_total}"
+    [ -n "$_buckets" ] && seg_tool_calls="${seg_tool_calls} (${_buckets})"
+    seg_tool_calls="$(muted "$seg_tool_calls")"
 fi
 
 seg_activity=""
@@ -1544,7 +1553,7 @@ for _lspec in "${_layout_line_specs[@]}"; do
     for _sn in "${_seg_names[@]}"; do
         _sv=$(segment_value "$_sn")
         [ -n "$_sv" ] || continue
-        [ -n "$_line" ] && _line+=" | "
+        [ -n "$_line" ] && _line+=" ${C_MUTED}|${RESET} "
         _line+="$_sv"
     done
     [ -n "$_line" ] && out_lines+=("$_line")

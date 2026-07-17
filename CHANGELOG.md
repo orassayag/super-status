@@ -1,5 +1,34 @@
 # Changelog
 
+## 2.2.0 — 18/07/2026
+
+### Changed
+- **UI redesign** (see `docs/plan-redesign.md`) — the default output is now a compact,
+  visually hierarchical 4-line layout instead of the previous 6–8 equal-weight labeled
+  lines. All data is preserved; low-priority fields are visually deprioritized (muted,
+  consolidated), not removed:
+  - **Line 1 — identity:** `◆ <model> | repo:branch[/worktree] | +N -M | vX.Y.Z`.
+    Model in the accent color; verbose labels (`Model:`, `Repo:`, `Branch:`,
+    `Lines Changes:`, `Claude Version:`) dropped.
+  - **Line 2 — usage bars:** `Sub` / `5h` / `Nd` / `Bal` share one line, each as
+    `label bar % reset`.
+  - **Line 3 — session cost:** `Ctx` bar, `Cache %`, `Cost`, `Tok in/out`.
+  - **Line 4 — diagnostics:** all muted gray — `LOC`, `Session`, `Thinking`, `Eff`,
+    and one consolidated `Calls N (Bash n, Read n, ...)` clause (the two previous
+    overlapping tool-call breakdowns merged; only non-zero buckets are spelled out).
+- **Bars are 10 cells (was 20), bracket-less, and bar-first** (`bar NN%` instead of
+  `NN% [bar]`) — every bar on every line is the same width, so stacked bars and their
+  `%` values align in a column. `bar_width` in config still overrides.
+- **Reset strings shortened** — bare countdowns (`Reset 2h30m`, not
+  `(Reset: 2h30m [12:40])`); only the weekly reset appends its absolute `dd/MM/yyyy`
+  date, and only when it's more than a day out.
+- **Color now carries semantic meaning only** — green (shared with the model-name
+  accent) = healthy, orange = approaching a threshold, red = at/near limit, muted
+  gray = informational. `Cache %` is muted instead of threshold-colored (it isn't
+  actionable); warning colors never appear on non-actionable fields.
+- **`Session`/`Thinking` de-duplicated** — session time appears once, on the
+  diagnostics line.
+
 ## 2.1.0 — 17/07/2026
 
 ### Added

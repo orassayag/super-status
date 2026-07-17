@@ -87,7 +87,7 @@ SUBSCRIPTION_PAYLOAD='{"model":{"display_name":"Opus"},"workspace":{"project_dir
 }
 
 @test "make_bar renders proportional fill and clamps out-of-range percentages" {
-    [ "$(make_bar 50 20)" = "##########----------" ]
+    [ "$(make_bar 50 10)" = "#####-----" ]
     [ "$(make_bar 200 10)" = "##########" ]
     [ "$(make_bar -5 10)" = "----------" ]
 }
@@ -125,9 +125,9 @@ SUBSCRIPTION_PAYLOAD='{"model":{"display_name":"Opus"},"workspace":{"project_dir
     run_statusline "$MINIMAL_PAYLOAD"
     [ "$status" -eq 0 ]
     plain=$(strip_ansi "$output")
-    [[ "$plain" == *"Model: Opus"* ]]
-    [[ "$plain" == *"Repo: child"* ]]
-    [[ "$plain" == *"Context: 25%"* ]]
+    [[ "$plain" == *"◆ Opus"* ]]
+    [[ "$plain" == *"child"* ]]
+    [[ "$plain" == *"Ctx "*" 25%"* ]]
 }
 
 @test "garbage stdin never crashes" {
@@ -135,17 +135,19 @@ SUBSCRIPTION_PAYLOAD='{"model":{"display_name":"Opus"},"workspace":{"project_dir
     [ "$status" -eq 0 ]
 }
 
-@test "no rate_limits means no Sessions line and no subscription warning" {
+@test "no rate_limits means no sessions bars and no subscription warning" {
     run_statusline "$MINIMAL_PAYLOAD"
     plain=$(strip_ansi "$output")
-    [[ "$plain" != *"Sessions:"* ]]
+    [[ "$plain" != *"Reset"* ]]
     [[ "$plain" != *"SUBSCRIPTION START DATE"* ]]
 }
 
 @test "subscription mode without a declared start date shows the reminder" {
     run_statusline "$SUBSCRIPTION_PAYLOAD"
     plain=$(strip_ansi "$output")
-    [[ "$plain" == *"Sessions: 5h: 63%"* ]]
+    [[ "$plain" == *"5h "*" 63% Reset "* ]]
+    # weekly reset is >1 day out, so it carries the absolute dd/MM/yyyy date
+    [[ "$plain" == *" 44% Reset "*"["*"/20"*"]"* ]]
     [[ "$plain" == *"SUBSCRIPTION START DATE IS MISSING"* ]]
 }
 
@@ -153,7 +155,7 @@ SUBSCRIPTION_PAYLOAD='{"model":{"display_name":"Opus"},"workspace":{"project_dir
     echo '"subscription_start_date": "14/07/2026"' > "$HOME/.claude/CLAUDE.md"
     run_statusline "$SUBSCRIPTION_PAYLOAD"
     plain=$(strip_ansi "$output")
-    [[ "$plain" == *"Subscription: "* ]]
+    [[ "$plain" == *"Sub "* ]]
     [[ "$plain" != *"SUBSCRIPTION START DATE"* ]]
 }
 
@@ -172,22 +174,22 @@ SUBSCRIPTION_PAYLOAD='{"model":{"display_name":"Opus"},"workspace":{"project_dir
     [ "$status" -eq 0 ]
     plain=$(strip_ansi "$output")
     [[ "$plain" == *"SUPER-STATUS CONFIG IS INVALID JSON"* ]]
-    [[ "$plain" == *"Model: Opus"* ]]
+    [[ "$plain" == *"◆ Opus"* ]]
 }
 
 @test "display toggle hides a single field" {
     echo '{"display":{"model":false}}' > "$HOME/.claude/super-status/config.json"
     run_statusline "$MINIMAL_PAYLOAD"
     plain=$(strip_ansi "$output")
-    [[ "$plain" != *"Model:"* ]]
-    [[ "$plain" == *"Repo: child"* ]]
+    [[ "$plain" != *"Opus"* ]]
+    [[ "$plain" == *"child"* ]]
 }
 
-@test "path_levels widens the Repo field" {
+@test "path_levels widens the repo location" {
     echo '{"path_levels":2}' > "$HOME/.claude/super-status/config.json"
     run_statusline "$MINIMAL_PAYLOAD"
     plain=$(strip_ansi "$output")
-    [[ "$plain" == *"Repo: parent/child"* ]]
+    [[ "$plain" == *"parent/child"* ]]
 }
 
 @test "max_width truncates lines with a trailing ellipsis, ANSI excluded" {
@@ -205,14 +207,14 @@ SUBSCRIPTION_PAYLOAD='{"model":{"display_name":"Opus"},"workspace":{"project_dir
     echo '{"bar_filled":"█","bar_empty":"░","bar_width":10}' > "$HOME/.claude/super-status/config.json"
     run_statusline "$MINIMAL_PAYLOAD"
     plain=$(strip_ansi "$output")
-    [[ "$plain" == *"[██░░░░░░░░]"* ]]
+    [[ "$plain" == *"██░░░░░░░░"* ]]
 }
 
 @test "context_value remaining shows tokens left instead of used/max" {
     echo '{"context_value":"remaining"}' > "$HOME/.claude/super-status/config.json"
     run_statusline '{"model":{"display_name":"Opus"},"context_window":{"used_percentage":25,"context_window_size":200000,"remaining_percentage":50}}'
     plain=$(strip_ansi "$output")
-    [[ "$plain" == *"(100k left)"* ]]
+    [[ "$plain" == *"100k left"* ]]
     [[ "$plain" != *"k/200k"* ]]
 }
 
@@ -221,15 +223,15 @@ SUBSCRIPTION_PAYLOAD='{"model":{"display_name":"Opus"},"workspace":{"project_dir
     run_statusline "$MINIMAL_PAYLOAD"
     plain=$(strip_ansi "$output")
     first_line=$(head -n1 <<< "$plain")
-    [[ "$first_line" == "Context: "*"| Model: Opus" ]]
+    [[ "$first_line" == "Ctx "*"| ◆ Opus" ]]
 }
 
 @test "minimal preset collapses to the compact layout" {
     echo '{"preset":"minimal"}' > "$HOME/.claude/super-status/config.json"
     run_statusline "$MINIMAL_PAYLOAD"
     plain=$(strip_ansi "$output")
-    [[ "$plain" != *"Repo:"* ]]
-    [[ "$plain" == *"Model: Opus"* ]]
+    [[ "$plain" != *"child"* ]]
+    [[ "$plain" == *"◆ Opus"* ]]
     [ "$(wc -l <<< "$plain" | tr -d '[:space:]')" -le 3 ]
 }
 
@@ -249,12 +251,12 @@ transcript_payload() {
         "$BATS_TEST_NUMBER" "$BATS_TEST_TMPDIR/transcript.jsonl"
 }
 
-@test "tool calls line buckets every call and buckets sum to the total" {
+@test "tool calls clause shows the total and only the non-zero buckets" {
     write_transcript
     run_statusline "$(transcript_payload)"
     plain=$(strip_ansi "$output")
-    [[ "$plain" == *"Tool Calls (6): Skills: 0 | Code: 1 | Commands: 0 | Read: 3 | MCP Call: 0 | Other: 2"* ]]
-    [[ "$plain" == *"Total Tokens: 3.5k in / 1.2k out"* ]]
+    [[ "$plain" == *"Calls 6 (Read 3, Code 1, Other 2)"* ]]
+    [[ "$plain" == *"Tok 3.5k/1.2k"* ]]
 }
 
 @test "activity, agents, and todo lines are off by default" {
@@ -288,7 +290,7 @@ transcript_payload() {
     payload=$(printf '{"model":{"display_name":"Opus"},"workspace":{"project_dir":"%s"},"cwd":"%s","context_window":{"used_percentage":25}}' "$repo" "$repo")
     run_statusline "$payload"
     plain=$(strip_ansi "$output")
-    [[ "$plain" == *"Branch: main* ?1"* ]]
+    [[ "$plain" == *":main* ?1"* ]]
 }
 
 # --- e2e: orca/master live run state -----------------------------------------
@@ -383,12 +385,12 @@ transcript_payload() {
 @test "OpenRouter base URL adds a provider badge to the model segment" {
     run bash -c "printf '%s' \"\$1\" | ANTHROPIC_BASE_URL=https://openrouter.ai/api/v1 bash \"\$2\"" _ "$MINIMAL_PAYLOAD" "$SCRIPT"
     plain=$(strip_ansi "$output")
-    [[ "$plain" == *"Model: Opus [OpenRouter]"* ]]
+    [[ "$plain" == *"◆ Opus [OpenRouter]"* ]]
 }
 
 @test "first-party Anthropic base URL shows no badge" {
     run bash -c "printf '%s' \"\$1\" | ANTHROPIC_BASE_URL=https://api.anthropic.com bash \"\$2\"" _ "$MINIMAL_PAYLOAD" "$SCRIPT"
     plain=$(strip_ansi "$output")
-    [[ "$plain" == *"Model: Opus"* ]]
-    [[ "$plain" != *"["*"]"* ]] || [[ "$plain" != *"Model: Opus ["* ]]
+    [[ "$plain" == *"◆ Opus"* ]]
+    [[ "$plain" != *"◆ Opus ["* ]]
 }
