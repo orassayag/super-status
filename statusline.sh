@@ -68,6 +68,7 @@ cfg_show_tool_calls=1
 cfg_show_activity=0
 cfg_show_agents=0
 cfg_show_todos=0
+cfg_show_orchestrator=0
 
 cfg_push_warning=3
 cfg_push_critical=10
@@ -91,8 +92,8 @@ cfg_color_bar_empty=""
 # Layout presets: lines separated by "|", segments within a line by ",".
 # A custom "lines" array in config.json overrides either preset, which is how
 # element reordering and merging elements onto shared lines is expressed.
-LAYOUT_EXPANDED="model,repo,branch,worktree,lines_changed,version|subscription|sessions,balance|context,cost,total_tokens|loc,session_time,thinking_time|cache_ratio,efficiency|tool_calls|activity|agents|todos"
-LAYOUT_COMPACT="model,repo,branch,worktree,context|subscription,sessions,balance,cost|activity,agents,todos"
+LAYOUT_EXPANDED="model,repo,branch,worktree,lines_changed,version|subscription|sessions,balance|context,cost,total_tokens|loc,session_time,thinking_time|cache_ratio,efficiency|tool_calls|activity|agents|todos|orchestrator"
+LAYOUT_COMPACT="model,repo,branch,worktree,context|subscription,sessions,balance,cost|activity,agents,todos,orchestrator"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -370,6 +371,21 @@ file_mtime() {
     stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0
 }
 
+trim_ws() {
+    local s="$1"
+    s="${s#"${s%%[![:space:]]*}"}"
+    s="${s%"${s##*[![:space:]]}"}"
+    printf '%s' "$s"
+}
+
+# UTC ISO-8601 (e.g. "2026-07-17T10:00:00Z") -> epoch seconds. Same BSD/GNU
+# dual-command fallback as parse_subscription_date above; prints nothing on
+# unparseable input rather than failing the caller.
+parse_iso_epoch() {
+    local _t="$1"
+    date -d "$_t" +%s 2>/dev/null || date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$_t" +%s 2>/dev/null
+}
+
 # ---------------------------------------------------------------------------
 # Everything below is the render flow; sourcing the script (tests) stops here
 # so the pure functions above are unit-testable without stdin or side effects.
@@ -408,7 +424,7 @@ apply_preset() {
     local _v
     case "$1" in
         full)
-            for _v in git_dirty git_ahead_behind git_file_stats activity agents todos; do
+            for _v in git_dirty git_ahead_behind git_file_stats activity agents todos orchestrator; do
                 printf -v "cfg_show_${_v}" '%s' 1
             done
             ;;
@@ -417,7 +433,7 @@ apply_preset() {
                       thinking_time cache_ratio efficiency tool_calls activity; do
                 printf -v "cfg_show_${_v}" '%s' 0
             done
-            for _v in git_dirty git_ahead_behind agents todos; do
+            for _v in git_dirty git_ahead_behind agents todos orchestrator; do
                 printf -v "cfg_show_${_v}" '%s' 1
             done
             ;;
@@ -425,7 +441,7 @@ apply_preset() {
             for _v in repo worktree lines_changed version git_dirty git_ahead_behind \
                       git_file_stats provider subscription cost total_tokens loc \
                       session_time thinking_time cache_ratio efficiency tool_calls \
-                      activity agents todos; do
+                      activity agents todos orchestrator; do
                 printf -v "cfg_show_${_v}" '%s' 0
             done
             cfg_layout="compact"
@@ -475,7 +491,7 @@ if [ -f "$CONFIG_FILE" ]; then
                 display_*)
                     _b=$(to_bool "$_v") || continue
                     case "${_k#display_}" in
-                        model|repo|branch|worktree|lines_changed|version|git_dirty|git_ahead_behind|git_file_stats|provider|subscription|sessions|balance|context|cost|total_tokens|loc|session_time|thinking_time|cache_ratio|efficiency|tool_calls|activity|agents|todos)
+                        model|repo|branch|worktree|lines_changed|version|git_dirty|git_ahead_behind|git_file_stats|provider|subscription|sessions|balance|context|cost|total_tokens|loc|session_time|thinking_time|cache_ratio|efficiency|tool_calls|activity|agents|todos|orchestrator)
                             printf -v "cfg_show_${_k#display_}" '%s' "$_b" ;;
                     esac
                     ;;
@@ -541,6 +557,8 @@ case "$cfg_language" in
         L_ACTIVITY="Activity:"
         L_AGENTS="Agents:"
         L_TODO="Todo:"
+        L_ORCA="Orca:"
+        L_MASTER="Master:"
         L_RESET="Reset:"
         L_LEFT="left"
         L_USED="used"
@@ -732,6 +750,73 @@ if [ -n "$git_branch" ] && { [ "$cfg_show_git_dirty" = "1" ] || [ "$cfg_show_git
     read -r git_dirty git_ahead git_behind git_staged git_modified git_untracked < "$_gs_file" 2>/dev/null
     [ "$git_ahead" = "-" ] && git_ahead=""
     [ "$git_behind" = "-" ] && git_behind=""
+fi
+
+# ---------------------------------------------------------------------------
+# Orca / Master live run state — reads the same on-disk files orca's
+# SKILL-ledger.sh and master's stage-plan.md already treat as their source of
+# truth (.claude/status.md, docs/status/stage-plan.md). Wave agents run as
+# separate cmux-worktree processes with their own transcript, invisible to
+# this session's stdin JSON — this is the only signal this script has of
+# them. Read-only; never writes either file. Checked unconditionally (no
+# existence gate) since both are small local files — cheaper than a stat
+# round-trip to decide whether to look. Orca is preferred if both are present
+# (a stale file left over from a previous run of the other kind).
+# ---------------------------------------------------------------------------
+orca_total=0; orca_merged=0; orca_conflict=0; orca_blocked=0; orca_inprogress=0; orca_done=0
+master_total=0; master_committed=0
+master_open_num=""; master_open_status=""; master_open_title=""; master_open_spawned=""
+if [ "$cfg_show_orchestrator" = "1" ] && [ -n "$git_root" ]; then
+    _orca_status_file="$git_root/.claude/status.md"
+    if [ -f "$_orca_status_file" ]; then
+        while IFS='|' read -r _ _os_name _ _ _ _os_status _ _; do
+            _os_name=$(trim_ws "$_os_name")
+            _os_status=$(trim_ws "$_os_status")
+            [ -z "$_os_name" ] && continue
+            [ "$_os_name" = "Agent" ] && continue
+            echo "$_os_name" | grep -qE '^-+$' && continue
+            orca_total=$(( orca_total + 1 ))
+            case "$_os_status" in
+                "REBASED & MERGED") orca_merged=$(( orca_merged + 1 )) ;;
+                "CONFLICT — NEEDS YOU") orca_conflict=$(( orca_conflict + 1 )) ;;
+                BLOCKED) orca_blocked=$(( orca_blocked + 1 )) ;;
+                "IN PROGRESS") orca_inprogress=$(( orca_inprogress + 1 )) ;;
+                DONE) orca_done=$(( orca_done + 1 )) ;;
+            esac
+        done < <(grep '^|' "$_orca_status_file" 2>/dev/null)
+    fi
+
+    _master_plan_file="$git_root/docs/status/stage-plan.md"
+    if [ -f "$_master_plan_file" ]; then
+        while IFS= read -r _ms_line; do
+            case "$_ms_line" in
+                "- Stage "*": "*" — "*) ;;
+                *) continue ;;
+            esac
+            _ms_rest1="${_ms_line#- Stage }"
+            _ms_num="${_ms_rest1%%:*}"
+            is_num "$_ms_num" || continue
+            _ms_rest2="${_ms_rest1#*: }"
+            _ms_status=$(trim_ws "${_ms_rest2%% — *}")
+            _ms_title="${_ms_rest2#* — }"
+            master_total=$(( master_total + 1 ))
+            if [ "$_ms_status" = "COMMITTED" ]; then
+                master_committed=$(( master_committed + 1 ))
+            elif [ -z "$master_open_num" ]; then
+                master_open_num="$_ms_num"
+                master_open_status="$_ms_status"
+                if [[ "$_ms_title" == *"spawned="* ]]; then
+                    _ms_sp="${_ms_title#*spawned=}"
+                    master_open_spawned=$(trim_ws "${_ms_sp%%]*}")
+                fi
+                if [[ "$_ms_title" == *"["* ]]; then
+                    master_open_title=$(trim_ws "${_ms_title%%\[*}")
+                else
+                    master_open_title=$(trim_ws "$_ms_title")
+                fi
+            fi
+        done < "$_master_plan_file"
+    fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -1384,6 +1469,31 @@ if [ "$cfg_show_todos" = "1" ] && [ -n "$todo_value" ]; then
     seg_todos="${C_LABEL}${L_TODO}${RESET} ${todo_value}"
 fi
 
+# Only rendered while something is actually still in flight (mirrors the
+# hide-when-idle convention on Agents:/Todo: above) — a fully merged/committed
+# run drops off instead of lingering as stale "all done" state forever.
+seg_orchestrator=""
+if [ "$cfg_show_orchestrator" = "1" ]; then
+    if [ "$orca_total" -gt 0 ] && [ "$orca_merged" -lt "$orca_total" ]; then
+        seg_orchestrator="${C_LABEL}${L_ORCA}${RESET} ${GREEN}${orca_merged}/${orca_total} merged${RESET}"
+        [ "$orca_inprogress" -gt 0 ] && seg_orchestrator="${seg_orchestrator} | ${CYAN}${orca_inprogress} in progress${RESET}"
+        [ "$orca_done" -gt 0 ] && seg_orchestrator="${seg_orchestrator} | ${C_ACCENT}${orca_done} done${RESET}"
+        [ "$orca_conflict" -gt 0 ] && seg_orchestrator="${seg_orchestrator} | ${RED}${orca_conflict} conflict ⚠${RESET}"
+        [ "$orca_blocked" -gt 0 ] && seg_orchestrator="${seg_orchestrator} | ${RED}${orca_blocked} blocked${RESET}"
+    elif [ "$master_total" -gt 0 ] && [ "$master_committed" -lt "$master_total" ] && [ -n "$master_open_num" ]; then
+        seg_orchestrator="${C_LABEL}${L_MASTER}${RESET} ${C_ACCENT}Stage ${master_open_num}/${master_total}${RESET} ${CYAN}${master_open_status}${RESET}"
+        [ -n "$master_open_title" ] && seg_orchestrator="${seg_orchestrator} — ${master_open_title}"
+        if [ -n "$master_open_spawned" ]; then
+            _mo_epoch=$(parse_iso_epoch "$master_open_spawned")
+            if is_num "$_mo_epoch"; then
+                _mo_elapsed=$(( $(date +%s) - ${_mo_epoch%.*} ))
+                [ "$_mo_elapsed" -ge 0 ] && seg_orchestrator="${seg_orchestrator} (${C_MUTED}$(fmt_elapsed_s "$_mo_elapsed")${RESET})"
+            fi
+        fi
+        [ "$master_committed" -gt 0 ] && seg_orchestrator="${seg_orchestrator} | ${GREEN}${master_committed} committed${RESET}"
+    fi
+fi
+
 segment_value() {
     case "$1" in
         model) printf '%s' "$seg_model" ;;
@@ -1407,6 +1517,7 @@ segment_value() {
         activity) printf '%s' "$seg_activity" ;;
         agents) printf '%s' "$seg_agents" ;;
         todos) printf '%s' "$seg_todos" ;;
+        orchestrator) printf '%s' "$seg_orchestrator" ;;
     esac
 }
 

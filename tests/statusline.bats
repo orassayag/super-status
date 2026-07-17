@@ -70,6 +70,18 @@ SUBSCRIPTION_PAYLOAD='{"model":{"display_name":"Opus"},"workspace":{"project_dir
     [ -z "$(fmt_tokens_k notanumber)" ]
 }
 
+@test "parse_iso_epoch reads a UTC ISO-8601 timestamp as UTC, not local time" {
+    epoch=$(parse_iso_epoch "2026-07-17T10:00:00Z")
+    [ -n "$epoch" ]
+    formatted=$(TZ=UTC date -d "@$epoch" +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null \
+             || TZ=UTC date -r "$epoch" +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null)
+    [ "$formatted" = "2026-07-17T10:00:00Z" ]
+}
+
+@test "parse_iso_epoch returns nothing on unparseable input" {
+    [ -z "$(parse_iso_epoch "not-a-date")" ]
+}
+
 @test "fmt_countdown_epoch clamps past epochs to 0m" {
     [ "$(fmt_countdown_epoch 1000000)" = "0m" ]
 }
@@ -277,6 +289,93 @@ transcript_payload() {
     run_statusline "$payload"
     plain=$(strip_ansi "$output")
     [[ "$plain" == *"Branch: main* ?1"* ]]
+}
+
+# --- e2e: orca/master live run state -----------------------------------------
+
+@test "orchestrator line is off by default even with an active orca status.md" {
+    repo="$BATS_TEST_TMPDIR/orca-repo"
+    mkdir -p "$repo/.claude"
+    git -C "$repo" init -q -b main
+    {
+        echo '| Agent | Task | Branch | Worktree | Status | Last Update |'
+        echo '|---|---|---|---|---|---|'
+        echo '| task-billing | task-billing | feature/billing | wt-billing | IN PROGRESS | 2026-07-17T10:00:00Z |'
+    } > "$repo/.claude/status.md"
+    payload=$(printf '{"model":{"display_name":"Opus"},"workspace":{"project_dir":"%s"},"cwd":"%s","context_window":{"used_percentage":25}}' "$repo" "$repo")
+    run_statusline "$payload"
+    plain=$(strip_ansi "$output")
+    [[ "$plain" != *"Orca:"* ]]
+}
+
+@test "orchestrator line buckets orca status.md rows by status" {
+    repo="$BATS_TEST_TMPDIR/orca-repo"
+    mkdir -p "$repo/.claude"
+    git -C "$repo" init -q -b main
+    {
+        echo '| Agent | Task | Branch | Worktree | Status | Last Update |'
+        echo '|---|---|---|---|---|---|'
+        echo '| task-auth | task-auth | feature/auth | wt-auth | REBASED & MERGED | 2026-07-17T09:00:00Z |'
+        echo '| task-billing | task-billing | feature/billing | wt-billing | IN PROGRESS | 2026-07-17T10:00:00Z |'
+        echo '| task-ui | task-ui | feature/ui | wt-ui | CONFLICT — NEEDS YOU | 2026-07-17T09:30:00Z |'
+    } > "$repo/.claude/status.md"
+    echo '{"preset":"full"}' > "$HOME/.claude/super-status/config.json"
+    payload=$(printf '{"model":{"display_name":"Opus"},"workspace":{"project_dir":"%s"},"cwd":"%s","context_window":{"used_percentage":25}}' "$repo" "$repo")
+    run_statusline "$payload"
+    plain=$(strip_ansi "$output")
+    [[ "$plain" == *"Orca: 1/3 merged | 1 in progress | 1 conflict ⚠"* ]]
+}
+
+@test "orchestrator line hides once every orca row is REBASED & MERGED" {
+    repo="$BATS_TEST_TMPDIR/orca-repo"
+    mkdir -p "$repo/.claude"
+    git -C "$repo" init -q -b main
+    {
+        echo '| Agent | Task | Branch | Worktree | Status | Last Update |'
+        echo '|---|---|---|---|---|---|'
+        echo '| task-auth | task-auth | feature/auth | wt-auth | REBASED & MERGED | 2026-07-17T09:00:00Z |'
+    } > "$repo/.claude/status.md"
+    echo '{"preset":"full"}' > "$HOME/.claude/super-status/config.json"
+    payload=$(printf '{"model":{"display_name":"Opus"},"workspace":{"project_dir":"%s"},"cwd":"%s","context_window":{"used_percentage":25}}' "$repo" "$repo")
+    run_statusline "$payload"
+    plain=$(strip_ansi "$output")
+    [[ "$plain" != *"Orca:"* ]]
+}
+
+@test "orchestrator line reports the open master stage with elapsed time" {
+    repo="$BATS_TEST_TMPDIR/master-repo"
+    mkdir -p "$repo/docs/status"
+    git -C "$repo" init -q -b main
+    spawned=$(date -u -d "-5 minutes" +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null \
+           || date -u -v-5M +"%Y-%m-%dT%H:%M:%SZ")
+    {
+        echo '# Master Stage Plan'
+        echo '## Stages'
+        echo '- Stage 1: COMMITTED — Scaffold data model'
+        echo "- Stage 2: IN PROGRESS — Core calculation engine [window=win-2 spawned=${spawned}]"
+        echo '- Stage 3: PLANNED — API endpoints'
+    } > "$repo/docs/status/stage-plan.md"
+    echo '{"preset":"full"}' > "$HOME/.claude/super-status/config.json"
+    payload=$(printf '{"model":{"display_name":"Opus"},"workspace":{"project_dir":"%s"},"cwd":"%s","context_window":{"used_percentage":25}}' "$repo" "$repo")
+    run_statusline "$payload"
+    plain=$(strip_ansi "$output")
+    [[ "$plain" == *"Master: Stage 2/3 IN PROGRESS — Core calculation engine (5m"*")"* ]]
+    [[ "$plain" == *"1 committed"* ]]
+}
+
+@test "orchestrator line hides once every master stage is COMMITTED" {
+    repo="$BATS_TEST_TMPDIR/master-repo"
+    mkdir -p "$repo/docs/status"
+    git -C "$repo" init -q -b main
+    {
+        echo '## Stages'
+        echo '- Stage 1: COMMITTED — Scaffold data model'
+    } > "$repo/docs/status/stage-plan.md"
+    echo '{"preset":"full"}' > "$HOME/.claude/super-status/config.json"
+    payload=$(printf '{"model":{"display_name":"Opus"},"workspace":{"project_dir":"%s"},"cwd":"%s","context_window":{"used_percentage":25}}' "$repo" "$repo")
+    run_statusline "$payload"
+    plain=$(strip_ansi "$output")
+    [[ "$plain" != *"Master:"* ]]
 }
 
 # --- e2e: provider badge ----------------------------------------------------

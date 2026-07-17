@@ -1,6 +1,6 @@
 # super-status
 
-A combined Claude Code statusline — identity, context usage, session quality, plan-limit tracking, and (optionally) live tool activity, running subagents, and todo progress, in labeled lines at the bottom of every session.
+A combined Claude Code statusline — identity, context usage, session quality, plan-limit tracking, and (optionally) live tool activity, running subagents, todo progress, and `/orca`/`/master` wave state, in labeled lines at the bottom of every session.
 
 ![Screenshot](images/demo.png)
 
@@ -105,6 +105,7 @@ Model: Claude Sonnet 4.6 | Repo: repo | Branch: master* ↑2 !3 +1 ?2 | ...
 Activity: ◐ Edit: auth.ts | ✓ Read ×3 | ✓ Grep ×2
 Agents: ◐ Explore [haiku]: Finding auth code (2m15s)
 Todo: ▸ Fixing authentication bug (2/5)
+Orca: 3/6 merged | 2 in progress | 1 conflict ⚠
 ```
 
 The `Subscription:` line needs a one-time setup step — see **Subscription tracking setup** below. Until then it's replaced by a bold red reminder line.
@@ -169,7 +170,7 @@ A malformed config never breaks the render — defaults are used and a one-line 
     "context": true, "cost": true, "total_tokens": true,
     "loc": true, "session_time": true, "thinking_time": true,
     "cache_ratio": true, "efficiency": true, "tool_calls": true,
-    "activity": false, "agents": false, "todos": false
+    "activity": false, "agents": false, "todos": false, "orchestrator": false
   },
   "git": {
     "push_warning_threshold": 3,
@@ -232,7 +233,7 @@ Any line that ends up with nothing to show (e.g. `Sessions:`/`Balance:` both emp
 }
 ```
 
-Segment names: `model`, `repo`, `branch`, `worktree`, `lines_changed`, `version`, `subscription`, `sessions`, `balance`, `context`, `cost`, `total_tokens`, `loc`, `session_time`, `thinking_time`, `cache_ratio`, `efficiency`, `tool_calls`, `activity`, `agents`, `todos`. Empty segments are dropped along with their separator, and fully empty lines are omitted — so listing `sessions` and `balance` on the same line is safe (only one ever renders).
+Segment names: `model`, `repo`, `branch`, `worktree`, `lines_changed`, `version`, `subscription`, `sessions`, `balance`, `context`, `cost`, `total_tokens`, `loc`, `session_time`, `thinking_time`, `cache_ratio`, `efficiency`, `tool_calls`, `activity`, `agents`, `todos`, `orchestrator`. Empty segments are dropped along with their separator, and fully empty lines are omitted — so listing `sessions` and `balance` on the same line is safe (only one ever renders).
 
 ### Kill switch
 
@@ -248,6 +249,7 @@ super-status is a stateless script — it only knows what Claude Code hands it o
 - **The permission-mode indicator (`⏵⏵ auto mode on ...`) disappears while Claude is thinking.** That line is Claude Code's own footer, not part of super-status — Claude Code temporarily replaces it with the thinking spinner (`✻ ... esc to interrupt`) while a response is being generated, and it comes back when the turn ends. Normal, and nothing a statusline script can influence.
 - **A `Sessions: 5h:` percentage above 100% (e.g. `108%`) is expected, not a bug.** Anthropic's own usage accounting can briefly overshoot the limit before Claude Code cuts a session off (e.g. a burst of concurrent or cached requests landing faster than the limit check). super-status prints the percentage exactly as reported rather than silently clamping it to 100 — only the bar's fill width is clamped, so the bar still reads as "full."
 - **The `Activity:` and `Agents:` lines update when the transcript does.** In-flight markers (`◐`) appear as soon as Claude Code records the tool call and clear when its result lands; elapsed times on agents tick with each re-render, so `refreshInterval` makes them feel live.
+- **The `Orca:`/`Master:` line is different — it's read straight off disk, not the transcript, so it stays live even while this session is idle.** `/orca` and `/master` (a [personal workflow](https://github.com/orassayag/agentic-project-workflow)) spawn wave agents as separate cmux-worktree processes with their own transcript, so nothing about them ever appears in *this* session's stdin JSON — the orchestrator session can be sitting there blocked on a tool call with no way to know a wave finished. `.claude/status.md` and `docs/status/stage-plan.md` are the on-disk files those tools already treat as their own source of run state, updated as the wave progresses rather than only once it's done — so with `refreshInterval` set, this line ticks in near-real-time independent of whether the orchestrator's own turn has ended.
 
 To make the time fields update continuously instead of only on those events, add `"refreshInterval": 2` (or any value in seconds, minimum `1`) to the `statusLine` block in `~/.claude/settings.json` (the installers do this for you). This re-runs the script on a fixed timer in addition to the normal event triggers, so the clock keeps ticking even while Claude is idle or thinking. The script's warm-path render is a single `jq` pass over stdin plus cached transcript/git reads, so even `"refreshInterval": 1` is comfortable.
 
@@ -324,13 +326,14 @@ The bucket mapping:
 
 Hidden entirely if no transcript is available yet, or before the session's first tool call.
 
-### Lines 8–10 — Activity, Agents, Todo (off by default — enable via config)
+### Lines 8–11 — Activity, Agents, Todo, Orchestrator (off by default — enable via config)
 
 | Field | Example | Meaning |
 |---|---|---|
 | `Activity:` | `◐ Edit: auth.ts \| ✓ Read ×3 \| ✓ Grep ×2` | Live tool activity, newest first: `◐` marks a tool call still in flight (its result hasn't landed in the transcript yet), `✓` marks completed calls — consecutive calls of the same tool collapse into one `×N` group, single calls show their target (file basename, command name, or search pattern). Hidden before the first tool call |
 | `Agents:` | `◐ Explore [haiku]: Finding auth code (2m15s)` | Every subagent currently in flight (a `Task`/`Agent` tool call with no result yet): its type, model (when specified), task description, and elapsed time since launch. One segment per agent; the whole line hides when no agent is running |
 | `Todo:` | `▸ Fixing authentication bug (2/5)` | The current in-progress item from the session's latest todo list, plus completed/total counts. Falls back to the next pending item when nothing is in progress; hides when no todos exist |
+| `Orca:` / `Master:` | `Orca: 3/6 merged \| 2 in progress \| 1 conflict ⚠` or `Master: Stage 2/5 IN PROGRESS — Core calculation engine (8m12s) \| 1 committed` | Live run state for the [`/orca` or `/master` workflow](https://github.com/orassayag/agentic-project-workflow), read directly from `.claude/status.md` / `docs/status/stage-plan.md` at the git root — not the transcript, so it updates even while this session is idle waiting on the wave (see **Live updates** below). `Orca:` buckets every task row by status (only non-zero buckets shown: merged, in progress, done, conflict, blocked) and hides once every row is `REBASED & MERGED`. `Master:` shows the lowest-numbered open stage, its status, and elapsed time since it was spawned, plus a running committed count; hides once every stage is `COMMITTED`. If both files are present (a stale leftover from a previous run of the other kind), `Orca:` wins |
 
 ## Backend modes
 
@@ -405,7 +408,9 @@ This checks whether `~/.claude/settings.json` still points at the right script a
 
 **A field (or a whole line) shows nothing** — that's by design. Every field is hidden — label, value, and separator together — rather than showing `null`/blank placeholders when its data isn't available (e.g. `tokei` not installed, no git repo, no rate-limit data on a non-Anthropic backend, no transcript yet for `Tool Calls:`). If every field on a line is missing, the whole line is omitted rather than printing an empty line. The one exception is `Efficiency Grade (A–F):`, which is also deliberately hidden while the session hasn't made any edit-capable tool call yet — a grade of `F(0)` during pure exploration would be misleading, not informative. Also check your config: a `display.*` toggle or preset may simply have it off.
 
-**`Activity:` / `Agents:` / `Todo:` never show** — they're off by default. Add `{"preset": "full"}` (or the individual `display` toggles) to `~/.claude/super-status/config.json`, and note `Agents:`/`Todo:` also hide whenever there's nothing in flight / no todo list yet.
+**`Activity:` / `Agents:` / `Todo:` / `Orca:` / `Master:` never show** — they're off by default. Add `{"preset": "full"}` (or the individual `display` toggles) to `~/.claude/super-status/config.json`, and note `Agents:`/`Todo:`/`Orca:`/`Master:` also hide whenever there's nothing in flight (no agent running, no todo list, or every task/stage already merged/committed).
+
+**`Orca:` / `Master:` shows nothing even though a wave is running** — it reads `.claude/status.md` / `docs/status/stage-plan.md` from the git root of `cwd`/`project_dir`, so it needs to be run from (or under) the same directory `/orca`/`/master` was run in. It's also possible every row/stage happens to be in a terminal state (`REBASED & MERGED` / `COMMITTED`) at the moment of that particular render — the line only shows while something is still active.
 
 **A bold red `SUPER-STATUS CONFIG IS INVALID JSON` line appears** — your `~/.claude/super-status/config.json` isn't parseable; the statusline is running on defaults until you fix or delete it. `bash ~/.claude/super-status/doctor.sh` confirms which.
 

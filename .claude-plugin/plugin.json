@@ -1,7 +1,7 @@
 {
   "name": "super-status",
-  "description": "Combined Claude Code statusline — identity, context usage, session quality, plan-limit tracking, live activity, subagents, and todos in labeled lines.",
-  "version": "2.0.0",
+  "description": "Combined Claude Code statusline — identity, context usage, session quality, plan-limit tracking, live activity, subagents, todos, and /orca-/master wave state in labeled lines.",
+  "version": "2.1.0",
   "author": {
     "name": "Or Assayag",
     "url": "https://github.com/orassayag"

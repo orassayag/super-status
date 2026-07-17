@@ -1,5 +1,21 @@
 # Changelog
 
+## 2.1.0 — 17/07/2026
+
+### Added
+- **`Orca:` / `Master:` line** — live run state for the
+  [`/orca` and `/master`](https://github.com/orassayag/agentic-project-workflow) parallel/sequential
+  execution workflows, read directly off the on-disk files those tools already treat as their own
+  source of run state (`.claude/status.md`, `docs/status/stage-plan.md`) rather than the session
+  transcript. This is the one signal this script has of wave agents at all — they run as separate
+  cmux-worktree processes with their own transcript, invisible to the orchestrating session's stdin
+  JSON — and because it's file-based rather than transcript-based, it keeps updating (with
+  `refreshInterval` set) even while the orchestrator session is idle, blocked on a tool call waiting
+  for the wave. `Orca:` buckets task rows by status and hides once every row is `REBASED & MERGED`;
+  `Master:` shows the open stage with elapsed time since spawn and hides once every stage is
+  `COMMITTED`. Off by default; enabled via `"preset": "full"`/`"essential"` or
+  `"display": {"orchestrator": true}`.
+
 ## 2.0.1 — 17/07/2026
 
 ### Fixed
