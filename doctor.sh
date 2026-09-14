@@ -84,5 +84,22 @@ jq --arg cmd "$EXPECTED_CMD" \
    '.statusLine = {"type": "command", "command": $cmd, "refreshInterval": (.statusLine.refreshInterval // 2)}' \
    "$SETTINGS" > "$tmp" && mv "$tmp" "$SETTINGS"
 
-echo "✓ Re-patched statusLine in settings.json to point at super-status."
+echo "✓ Re-patched statusLine in Claude Code settings.json to point at super-status."
 echo "  Restart Claude Code for the change to take effect."
+
+# Antigravity CLI statusLine check
+AGY_DIR="$HOME/.gemini/antigravity-cli"
+AGY_SETTINGS="$AGY_DIR/settings.json"
+if [ -d "$AGY_DIR" ] || [ -f "$AGY_SETTINGS" ] || command -v agy >/dev/null 2>&1; then
+    mkdir -p "$AGY_DIR"
+    [ ! -f "$AGY_SETTINGS" ] && echo '{}' > "$AGY_SETTINGS"
+    agy_cmd=$(jq -r '.statusLine.command // empty' "$AGY_SETTINGS" 2>/dev/null)
+    if [ "$agy_cmd" = "$EXPECTED_CMD" ] || [ "$agy_cmd" = "$SCRIPT_PATH" ]; then
+        echo "✓ Antigravity CLI settings.json already points at super-status."
+    else
+        cp "$AGY_SETTINGS" "${AGY_SETTINGS}.bak.$(date +%s)"
+        tmp=$(mktemp)
+        jq --arg cmd "$EXPECTED_CMD"            '.statusLine = {"command": $cmd, "enabled": true}'            "$AGY_SETTINGS" > "$tmp" && mv "$tmp" "$AGY_SETTINGS"
+        echo "✓ Patched statusLine in Antigravity CLI settings.json."
+    fi
+fi

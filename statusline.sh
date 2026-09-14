@@ -117,8 +117,8 @@ cfg_color_bar_empty=""
 # Layout presets: lines separated by "|", segments within a line by ",".
 # A custom "lines" array in config.json overrides either preset, which is how
 # element reordering and merging elements onto shared lines is expressed.
-LAYOUT_EXPANDED="model,repo,branch,worktree,lines_changed,version|subscription,sessions,balance|context,cache_ratio,cost,total_tokens|loc,session_time,thinking_time,efficiency,tool_calls|activity|agents|todos|orchestrator"
-LAYOUT_COMPACT="model,repo,branch,worktree,context|subscription,sessions,balance,cost|activity,agents,todos,orchestrator"
+LAYOUT_EXPANDED="model,agent,repo,branch,worktree,lines_changed,version|subscription,sessions,balance|context,cache_ratio,cost,total_tokens|loc,session_time,thinking_time,efficiency,tool_calls|activity|agents|todos|orchestrator"
+LAYOUT_COMPACT="model,agent,repo,branch,worktree,context|subscription,sessions,balance,cost|activity,agents,todos,orchestrator"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -242,19 +242,28 @@ humanize_model_id() {
     local raw="$1" id part out=""
     [ -n "$raw" ] || { echo ""; return; }
     id="${raw##*/}"          # strip vertex "publishers/.../models/ID" paths
-    id="${id##*.}"           # strip a leading "provider." prefix (Bedrock)
+    # Strip leading "region.provider." segments (Bedrock, e.g. "us.anthropic.claude-...")
+    # one dot-segment at a time, stopping once the remaining segment is itself the
+    # model name — so a version dot in "gemini-1.5-pro" is never mistaken for one.
+    while [[ "$id" == *.* && "${id%%.*}" != *claude* && "${id%%.*}" != *gemini* ]]; do
+        id="${id#*.}"
+    done
     case "$id" in
-        *claude*) ;;
+        *claude*|*gemini*) ;;
         *) echo "$raw"; return ;;
     esac
     id="${id%-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]}"   # trailing yyyymmdd
-    local IFS='-'
     local prev_num=0
-    for part in $id; do
+    local parts=()
+    IFS='-' read -ra parts <<< "$id"
+    for part in "${parts[@]}"; do
         [ -n "$part" ] || continue
         if [[ "$part" =~ ^[0-9]+$ ]]; then
             if [ "$prev_num" -eq 1 ]; then out="${out}.${part}"; else out="${out} ${part}"; fi
             prev_num=1
+        elif [ "$part" = "high" ] || [ "$part" = "medium" ] || [ "$part" = "low" ]; then
+            out="${out} ($(tr '[:lower:]' '[:upper:]' <<< "${part:0:1}")${part:1})"
+            prev_num=0
         else
             out="${out} $(tr '[:lower:]' '[:upper:]' <<< "${part:0:1}")${part:1}"
             prev_num=0
@@ -688,18 +697,21 @@ case "$cfg_language" in
 esac
 
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 # Single-pass stdin parse — one jq call emits every needed field as
-# key<TAB>value (replacing ~25 per-field jq spawns). @tsv escapes embedded
-# tabs/newlines so the read loop can never be desynced by data.
+# key<TAB>value (replacing ~25 per-field jq spawns). Supports both
+# Claude Code and Google Antigravity CLI (agy).
 # ---------------------------------------------------------------------------
 model=""; effort_level=""; project_dir=""; cwd=""; current_dir=""; worktree=""
 session_id=""; transcript_path=""; cc_version=""
+agent_name=""; subagents_count=""
 sv_used_pct=""; sv_remaining_pct=""; sv_window_size=""
 sv_cur_in=""; sv_cur_cc=""; sv_cur_cr=""
 api_ms=""; dur_ms=""; cost_usd=""; lines_added=""; lines_removed=""
 five_util_probe=""; five_reset=""; seven_util_probe=""; seven_reset=""
+is_agy_marker=""
 
-while IFS=$'\t' read -r _k _v; do
+while IFS=$'	' read -r _k _v; do
     case "$_k" in
         model) model="$_v" ;;
         effort_level) effort_level="$_v" ;;
@@ -710,6 +722,8 @@ while IFS=$'\t' read -r _k _v; do
         session_id) session_id="$_v" ;;
         transcript_path) transcript_path="$_v" ;;
         version) cc_version="$_v" ;;
+        agent) agent_name="$_v" ;;
+        subagents_count) subagents_count="$_v" ;;
         used_pct) sv_used_pct="$_v" ;;
         remaining_pct) sv_remaining_pct="$_v" ;;
         window_size) sv_window_size="$_v" ;;
@@ -725,25 +739,28 @@ while IFS=$'\t' read -r _k _v; do
         five_reset) five_reset="$_v" ;;
         seven_pct) seven_util_probe="$_v" ;;
         seven_reset) seven_reset="$_v" ;;
+        is_agy) is_agy_marker="$_v" ;;
     esac
 done <<< "$(jq -r '
     def s(v): if v == null then "" else (v | tostring) end;
     [
-      ["model", s(.model.display_name)],
+      ["model", s(.model.display_name // .model.name // .model.id // .model)],
       ["effort_level", s(.effort.level)],
-      ["project_dir", s(.workspace.project_dir)],
-      ["cwd", s(.cwd)],
-      ["current_dir", s(.workspace.current_dir)],
+      ["project_dir", s(.workspace.project_dir // .workspace.current_dir // .workspace // .workspaceUris[0])],
+      ["cwd", s(.cwd // .workspace.current_dir // .workspace // .workspaceUris[0])],
+      ["current_dir", s(.workspace.current_dir // .workspace // .workspaceUris[0])],
       ["worktree", s(.workspace.git_worktree)],
-      ["session_id", s(.session_id)],
+      ["session_id", s(.session_id // .conversation_id)],
       ["transcript_path", s(.transcript_path)],
       ["version", s(.version)],
-      ["used_pct", s(.context_window.used_percentage)],
-      ["remaining_pct", s(.context_window.remaining_percentage)],
-      ["window_size", s(.context_window.context_window_size)],
-      ["cur_in", s(.context_window.current_usage.input_tokens)],
+      ["agent", s(.agent // .agent_state // .agentMode)],
+      ["subagents_count", s(if (.subagents | type) == "array" then (.subagents | length) else "" end)],
+      ["used_pct", s(.context_window.used_percentage // .context.used_percentage)],
+      ["remaining_pct", s(.context_window.remaining_percentage // .context.remaining_percentage)],
+      ["window_size", s(.context_window.context_window_size // .context.context_window_size)],
+      ["cur_in", s(.context_window.current_usage.input_tokens // .context.input_tokens // .context_window.input_tokens)],
       ["cur_cc", s(.context_window.current_usage.cache_creation_input_tokens)],
-      ["cur_cr", s(.context_window.current_usage.cache_read_input_tokens)],
+      ["cur_cr", s(.context_window.current_usage.cache_read_input_tokens // .context.cached_tokens)],
       ["api_ms", s(.cost.total_api_duration_ms)],
       ["dur_ms", s(.cost.total_duration_ms)],
       ["cost_usd", s(.cost.total_cost_usd)],
@@ -752,10 +769,23 @@ done <<< "$(jq -r '
       ["five_pct", s(.rate_limits.five_hour.used_percentage)],
       ["five_reset", s(.rate_limits.five_hour.resets_at)],
       ["seven_pct", s(.rate_limits.seven_day.used_percentage)],
-      ["seven_reset", s(.rate_limits.seven_day.resets_at)]
+      ["seven_reset", s(.rate_limits.seven_day.resets_at)],
+      ["is_agy", s(if .vcsName != null or .agent_state != null or (.model.id != null and (.model.id | test("gemini"; "i"))) then 1 else 0 end)]
     ] | .[] | @tsv' <<< "$input" 2>/dev/null)"
 
-# ---------------------------------------------------------------------------
+# Platform detection: Claude Code vs. Google Antigravity CLI (agy)
+IS_ANTIGRAVITY=0
+if [ "$is_agy_marker" = "1" ] || [ -n "$agent_name" ] || [ -n "$subagents_count" ]; then
+    IS_ANTIGRAVITY=1
+elif [ -n "$ANTIGRAVITY_AGENT" ] && [ -z "$five_util_probe" ] && [[ ! "$model" =~ [Cc]laude ]]; then
+    IS_ANTIGRAVITY=1
+fi
+
+if [ -z "$transcript_path" ] && [ "$IS_ANTIGRAVITY" -eq 1 ] && [ -n "$session_id" ]; then
+    _agy_transcript="$HOME/.gemini/antigravity-cli/brain/${session_id}/.system_generated/logs/transcript.jsonl"
+    [ -f "$_agy_transcript" ] && transcript_path="$_agy_transcript"
+fi
+
 # Rate-limit persistence across sessions.
 # Claude Code only populates `rate_limits` in the stdin JSON once the session
 # has made a real API call; a fresh session (right after /clear, or before its
@@ -1222,6 +1252,46 @@ try:
                 out = usage.get('output_tokens')
                 if isinstance(out, (int, float)):
                     total_out += out
+            elif obj.get('type') == 'PLANNER_RESPONSE':
+                usage = obj.get('usage') or {}
+                for key in ('input_tokens', 'prompt_tokens', 'cached_tokens', 'cache_read_input_tokens'):
+                    value = usage.get(key)
+                    if isinstance(value, (int, float)):
+                        total_in += value
+                for key in ('output_tokens', 'completion_tokens'):
+                    value = usage.get(key)
+                    if isinstance(value, (int, float)):
+                        total_out += value
+                model_name = obj.get('model') or (obj.get('model_info') or {}).get('name')
+                if isinstance(model_name, str) and model_name:
+                    latest_model = model_name
+                tool_calls = obj.get('tool_calls')
+                if isinstance(tool_calls, list):
+                    for tc in tool_calls:
+                        if not isinstance(tc, dict): continue
+                        name = tc.get('name') or ''
+                        low = name.lower()
+                        if name.startswith('mcp_') or name == 'call_mcp_tool':
+                            buckets['MCP'] += 1
+                        elif 'skill' in low or name == 'invoke_subagent':
+                            buckets['SKILLS'] += 1
+                        elif low in code_tools or low in {'write_to_file', 'replace_file_content'}:
+                            buckets['CODE'] += 1
+                        elif low in {'run_command', 'bash'}:
+                            buckets['COMMANDS'] += 1
+                        elif low in read_tools or low in {'view_file', 'grep_search', 'find_by_name', 'list_dir', 'read_url_content'}:
+                            buckets['READ'] += 1
+                        else:
+                            buckets['OTHER'] += 1
+                        entry = {
+                            'id': tc.get('id') or str(len(tools)),
+                            'name': name,
+                            'low': low,
+                            'done': True,
+                            'epoch': to_epoch(obj.get('created_at')),
+                            'target': clean(target_for(name, tc.get('arguments') or {}), 30),
+                        }
+                        tools.append(entry)
             if not isinstance(content, list):
                 continue
             for block in content:
@@ -1381,6 +1451,8 @@ fi
 # (claude-sonnet-4-6-20250101) are humanized to "Claude Sonnet 4.6".
 if [ "$_want_transcript_model" -eq 1 ] && [ -n "$transcript_model" ]; then
     model=$(humanize_model_id "$transcript_model")
+elif [[ "$model" =~ ^(claude|gemini)- ]]; then
+    model=$(humanize_model_id "$model")
 fi
 
 # ---------------------------------------------------------------------------
@@ -1551,9 +1623,21 @@ if [ "$cfg_show_lines_changed" = "1" ]; then
     fi
 fi
 
+seg_agent=""
+if [ -n "$agent_name" ] && [ "$agent_name" != "null" ]; then
+    seg_agent="${C_LABEL}Agent:${RESET} ${CYAN}${agent_name}${RESET}"
+    if is_num "$subagents_count" && [ "$subagents_count" -gt 0 ]; then
+        seg_agent="${seg_agent} $(muted "(+${subagents_count} subagent$([ "$subagents_count" -gt 1 ] && echo "s"))")"
+    fi
+fi
+
 seg_version=""
 if [ "$cfg_show_version" = "1" ] && [ -n "$cc_version" ]; then
-    seg_version="$(muted "v${cc_version}")"
+    if [ "$IS_ANTIGRAVITY" -eq 1 ]; then
+        seg_version="$(muted "agy v${cc_version}")"
+    else
+        seg_version="$(muted "v${cc_version}")"
+    fi
 fi
 
 seg_subscription="$subscription_value"
@@ -1796,6 +1880,7 @@ segment_value() {
         repo) printf '%s' "$seg_repo" ;;
         branch) printf '%s' "$seg_branch" ;;
         worktree) printf '%s' "$seg_worktree" ;;
+        agent) printf '%s' "$seg_agent" ;;
         lines_changed) printf '%s' "$seg_lines_changed" ;;
         version) printf '%s' "$seg_version" ;;
         subscription) printf '%s' "$seg_subscription" ;;

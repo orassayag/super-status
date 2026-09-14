@@ -1,6 +1,6 @@
 # super-status
 
-A combined Claude Code statusline — identity, context usage, session quality, plan-limit tracking, and (optionally) live tool activity, running subagents, todo progress, and `/orca`/`/master` wave state, in a compact, visually hierarchical layout at the bottom of every session.
+A unified statusline for **Claude Code** and **Google Antigravity CLI (`agy`)** — identity, active agents, context usage, session quality, plan-limit tracking, and (optionally) live tool activity, running subagents, todo progress, and `/orca`/`/master` wave state, in a compact, visually hierarchical layout at the bottom of every session.
 
 ![Screenshot](images/demo.png)
 
@@ -66,7 +66,26 @@ Then add this to `~/.claude/settings.json` (create the file if it doesn't exist)
 
 This is the **user-level** settings file, so it applies to every project automatically — no per-project setup needed. `refreshInterval` (seconds) is optional but recommended — see **Live updates** below for why.
 
-### Open a new Claude Code session
+### Google Antigravity CLI (`agy`) setup
+
+Add this to `~/.gemini/antigravity-cli/settings.json`:
+
+```json
+{
+  "statusLine": {
+    "command": "/bin/bash /home/YOUR_USER/.claude/super-status/statusline.sh",
+    "enabled": true
+  }
+}
+```
+
+Or configure it interactively inside any active `agy` session:
+
+```text
+/statusline ~/.claude/super-status/statusline.sh
+```
+
+### Open a new session
 
 The statusline configuration is read at startup — it won't appear in a session that was already running when you edited `settings.json`. Close your current session and open a new one.
 
