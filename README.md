@@ -24,7 +24,7 @@ brew install tokei
 
 ## Install
 
-### Option A — as a Claude Code plugin (three in-session commands)
+### Option A — as a Claude Code plugin (four in-session commands)
 
 ```
 /plugin marketplace add orassayag/super-status
@@ -184,8 +184,13 @@ A malformed config never breaks the render — defaults are used and a one-line 
   "model_params": {},
   "external_usage_path": "",
   "external_usage_max_age": 1800,
+  "plan_label": "",
+  "api_credit_balance": null,
+  "api_credit_as_of": "",
+  "api_spend_cache_seconds": 300,
+  "model_pricing": {},
   "display": {
-    "model": true, "repo": true, "branch": true, "worktree": true,
+    "model": true, "mode": true, "repo": true, "branch": true, "worktree": true,
     "lines_changed": true, "version": true, "provider": true, "effort": true,
     "git_dirty": false, "git_ahead_behind": false, "git_file_stats": false,
     "subscription": true, "sessions": true, "balance": true,
@@ -225,7 +230,12 @@ A malformed config never breaks the render — defaults are used and a one-line 
 | `model_params` | Parameter-count badge shown after the model name (`◆ Sonnet 5 (365B)`). A map from a case-insensitive **substring of the displayed model name** to the text to render, e.g. `{"sonnet 5": "365B", "opus 5": "2T"}`. The longest matching pattern wins, so a specific `"sonnet 5"` beats a broader `"sonnet"`. Empty (the default) = no badge — Anthropic publishes no parameter counts, so these numbers are yours to declare, not a built-in table |
 | `external_usage_path` | Path to a local JSON file another tool writes with the same shape as stdin's `rate_limits` (optionally plus a `model_scoped` map of per-model weekly windows). When stdin omits `rate_limits`, a fresh snapshot fills the `5h`/`Nd` bars from session start and renders any per-model windows. Supports a leading `~/`. Empty = disabled |
 | `external_usage_max_age` | Freshness cap in seconds for `external_usage_path` (default `1800`). A snapshot older than this is ignored, so a stale file never resurrects a rolled-over window. `0` = never expire |
-| `display.*` | Per-field show/hide. Field names match the segment names under **Custom layout** below (plus `git_dirty` / `git_ahead_behind` / `git_file_stats` / `provider` / `effort`, which are sub-toggles of `branch`/`model`) |
+| `plan_label` | Overrides the account-mode badge shown before the model name (`◆ API Opus 5`). Empty (the default) auto-detects — see **Account-mode badge** below. Set it to whatever you want rendered: `"Max 20x"`, `"Pro"`, `"Team"` |
+| `api_credit_balance` | Your prepaid credit balance in USD, read off the Console's **Credit balance** card, e.g. `96.49`. Turns on the `Bal` bar in API mode. `null` (the default) = the whole feature is inert — see **Prepaid API credit bar** below |
+| `api_credit_as_of` | When `api_credit_balance` was read, as `dd/MM/yyyy` or `dd/MM/yyyy HH:MM`. Required whenever a balance is declared; an absent or malformed value warns rather than guessing. **Prefer the `HH:MM` form for a balance you just read** — a bare date means midnight, so stamping an afternoon reading as today makes the bar re-subtract everything already spent that day. `/super-status:credits` writes the clock time for you; the bare-date form is for backdating a past top-up, where midnight is the right reading |
+| `api_spend_cache_seconds` | How long a fetched spend total is reused before a refresh is spawned (default `300`, minimum `60`). Anthropic's cost data lands ~5 minutes behind the request, and the endpoint asks for at most one poll a minute, so going below a few minutes buys nothing |
+| `model_pricing` | Per-MTok list-rate overrides for the **local** spend estimate, as `{"<model-id substring>": "<input>/<output>"}` — e.g. `{"opus-5": "5/25"}`. Longest matching pattern wins, same rule as `model_params`. Empty (the default) uses the estimator's built-in table; override when Anthropic's rates move or you're on negotiated pricing. Has no effect on the Admin API figure, which is already in dollars |
+| `display.*` | Per-field show/hide. Field names match the segment names under **Custom layout** below (plus `git_dirty` / `git_ahead_behind` / `git_file_stats` / `provider` / `effort` / `mode`, which are sub-toggles of `branch`/`model`) |
 | `git.push_warning_threshold` / `push_critical_threshold` | Unpushed-commit counts at which the `↑N` marker turns orange / red |
 | `colors.*` | Per-element color overrides: named ANSI (`red`, `cyan`, `grey`, `bright-blue`, `orange`, ...), 256-color numbers (`"208"`), or hex (`"#ff8800"`). Empty = built-in default |
 | `thresholds.*` | Percentages at which the context / 5-hour / weekly bars turn orange (warning) and red (critical) |
@@ -286,7 +296,7 @@ To make the time fields update continuously instead of only on those events, add
 
 | Field              | Example             | Meaning                                                                |
 | ------------------ | -------------------- | ----------------------------------------------------------------------- |
-| `◆ <model>`        | `◆ Claude Sonnet 4.6` | The model powering the current session, in the accent color. A `model_params` entry adds its parameter count after the name (`◆ Sonnet 5 (365B)`). On a non-Anthropic backend a provider badge is appended (`[OpenRouter]`, `[z.ai]`, `[Bedrock]`, `[Vertex]`, or the backend's hostname). Bedrock/Vertex are detected from `CLAUDE_CODE_USE_BEDROCK`/`CLAUDE_CODE_USE_VERTEX` (or a matching base URL). When Claude Code reports a reasoning-effort level (`low`/`medium`/`high`/`xhigh`/`max`), it's appended last as `[High]`; models that don't support the effort parameter show no badge. With `model_source` set, the name can be recovered from the transcript when a proxy rewrites it |
+| `◆ <mode> <model>` | `◆ API Claude Sonnet 4.6` | The model powering the current session, in the accent color, preceded by the account-mode badge — `API` on prepaid/invoice credit billing, or your subscription tier (`Pro`, `Max 20x`, or plain `Sub`). See **Account-mode badge** below; `plan_label` overrides it and `display.mode` turns it off. A `model_params` entry adds its parameter count after the name (`◆ Sonnet 5 (365B)`). On a non-Anthropic backend a provider badge is appended (`[OpenRouter]`, `[z.ai]`, `[Bedrock]`, `[Vertex]`, or the backend's hostname). Bedrock/Vertex are detected from `CLAUDE_CODE_USE_BEDROCK`/`CLAUDE_CODE_USE_VERTEX` (or a matching base URL). When Claude Code reports a reasoning-effort level (`low`/`medium`/`high`/`xhigh`/`max`), it's appended last as `[High]`; models that don't support the effort parameter show no badge. With `model_source` set, the name can be recovered from the transcript when a proxy rewrites it |
 | `repo:branch/worktree` | `repo:master* ↑2 ↓1 !3 +1 ?2` | Current project folder, git branch (resolved from your working directory's git root), and — only inside a git worktree — the worktree name after a `/`. `path_levels` shows more of the repo path. With the git toggles enabled: `*` = dirty working tree; `↑N`/`↓N` = commits ahead/behind upstream (`↑` colored by the push thresholds); `!N +N ?N` = modified / staged / untracked file counts (only non-zero ones shown). Refreshed at most every 10s |
 | `+N -M`            | `+45 -12`             | Lines added/removed this session, taken directly from Claude Code's own `cost.total_lines_added`/`total_lines_removed` counters — updates immediately on every render, no caching. Only counts edits made by this session's own tools (not sub-agents running in their own sessions, and not nested-repo work outside the current one). Hidden if both are zero |
 | `vX.Y.Z`           | `v2.1.90`             | Claude Code CLI version (muted — informational)                        |
@@ -298,7 +308,7 @@ To make the time fields update continuously instead of only on those events, add
 | `Sub` | `▮▮▮▮▮▮▪▪▪▪ 62% Reset 14d (08/08)`      | How far through your current monthly billing cycle you are, with days remaining until renewal (rounded up) and the renewal `(dd/MM)` in parens. Cycles are true calendar months from your declared start date (14/07 renews on 14/08 — 28–31 days depending on the month; a start day missing from a shorter month, e.g. the 31st, clamps to that month's last day). Green early in the cycle, orange mid-cycle, red in the final ~2 days — informational progress, not a rate-limit warning. Requires the one-time setup in **Subscription tracking setup** below; until then a bold red reminder line appears at the very top instead |
 | `5h`  | `▮▮▮▮▮▮▮▮▮▪ 99% Reset 2h30m (16:30)`    | % of your rolling 5-hour Anthropic plan limit used, a usage bar colored to match, the countdown until reset, and the reset's absolute "when" marker in parens                                                                          |
 | `Nd`  | `3d ▮▮▮▮▪▪▪▪▪▪ 44% Reset 3d14h10m (21/07)` | % of your rolling weekly Anthropic plan limit used. `N` is computed live — the actual number of days from now until the reset (rounded up) — not hardcoded to 7, since this window is rolling and doesn't always land exactly a week out. Like every reset, it carries an absolute "when" marker in parens: a clock time `(HH:MM)` if it lands today, a date `(dd/MM)` otherwise |
-| `Bal` | `▮▮▪▪▪▪▪▪▪▪ 17% $16.58/$20.00`          | (OpenRouter mode only) live remaining/total credit balance from OpenRouter's `/api/v1/credits` endpoint, bar and % colored to match usage                                                                                             |
+| `Bal` | `▮▮▪▪▪▪▪▪▪▪ 17% $16.58/$20.00`          | Remaining/total credit balance, bar and % colored to match usage. On **OpenRouter** both figures are live from `/api/v1/credits`. On **Anthropic API billing** the total is the balance you declared via `api_credit_balance` and the used portion is spend since `api_credit_as_of` — from the Admin API cost report, or estimated from local transcripts and marked `est.` when no Admin key is available. The `(as of dd/MM)` suffix names the snapshot the bar is measured against. See **Prepaid API credit bar** below |
 
 Colors: green = healthy, orange = getting close, red = at/near the limit (the weekly window uses tighter thresholds than 5-hour, since a blown weekly quota is more disruptive than a 5-hour one that resets soon — both are configurable). A percentage above 100% can happen (see **Live updates** above) — it's shown as-is rather than clamped, though the bar itself always reads as full.
 
@@ -397,7 +407,87 @@ This whole feature is subscription-mode only — API-key and OpenRouter users ha
 
 ### Mode 2 — Anthropic API key or other pay-as-you-go backend (e.g. z.ai)
 
-Detected when `rate_limits` is absent. The usage-bar line is omitted entirely rather than showing empty or misleading data, because no backend in this mode currently exposes a programmatic balance check (confirmed against Anthropic's own API — there's no public endpoint for pay-as-you-go credit balance — and against z.ai's docs, which only offer a dashboard view). `Cost` remains the primary usage signal available in this mode.
+Detected when `rate_limits` is absent. There is still no rolling-window data to show here, so the `5h`/`Nd` bars stay omitted rather than rendering empty. On **Anthropic** API billing you can opt into a `Bal` credit bar — see **Prepaid API credit bar** below. On other pay-as-you-go backends `Cost` remains the primary usage signal (z.ai, for instance, documents only a dashboard view, no balance endpoint).
+
+## Account-mode badge
+
+The identity line leads with how the account is billed, so a session run on API credits never looks like a session run on a subscription:
+
+```
+◆ API Opus 5 (3200B) | super-status:main | v2.1.267
+◆ Max 20x Opus 5 (3200B) | super-status:main | v2.1.267
+```
+
+Detection reads `~/.claude.json`'s `oauthAccount` — `billingType` (`prepaid`/`invoice` → `API`, `subscription` → a subscription) and `seatTier`, which names the tier when Anthropic publishes it. **`seatTier` is `null` on most accounts**, so a subscription with no published tier renders the neutral `Sub` rather than guessing between Pro and Max. To name yours, declare it once:
+
+```json
+{ "plan_label": "Max 20x" }
+```
+
+`plan_label` wins over everything detected. Two behaviors worth knowing:
+
+- **Behind a proxy** (OpenRouter, Bedrock, Vertex, z.ai, any custom `ANTHROPIC_BASE_URL`) the badge is suppressed, because your Anthropic billing type says nothing about who is billed for that traffic — the `[provider]` badge speaks for the backend instead. An explicit `plan_label` still renders, so you can label a proxy setup yourself.
+- **With no `~/.claude.json` and no `rate_limits`** there is nothing to detect from and the badge is simply absent, exactly as before this feature existed.
+
+Turn it off with `{"display": {"mode": false}}`.
+
+## Prepaid API credit bar
+
+On Anthropic API billing, `Bal` answers the same question the `Sub` bar answers for subscribers: how much of what you paid for is left.
+
+```
+Bal ▮▮▪▪▪▪▪▪▪▪ 18% $79.12/$96.49 (as of 01/09)
+```
+
+**Why it needs setup.** Anthropic publishes no credit-balance endpoint — the Console's **Credit balance** card is not in the public API. Only *spend* is measurable. So the bar is built from two halves: a balance you declare, and spend measured forward from that moment.
+
+**Setup — one command.** Read your balance off [the Console](https://platform.claude.com/settings/billing) and declare it (USD; a `$` and commas are fine):
+
+```
+/super-status:credits 102
+```
+
+That writes `api_credit_balance` and today's `api_credit_as_of` into `~/.claude/super-status/config.json`, backing up the previous file, and tells you which spend source you'll get. Pass a `dd/MM/yyyy` second argument to backdate a top-up you're recording late:
+
+```
+/super-status:credits 102 01/09/2026
+```
+
+Re-run it after every top-up. The cached spend total is keyed by the snapshot date, so moving the date discards the old total — no stale arithmetic.
+
+### Where the spend figure comes from
+
+Two sources, tried in that order:
+
+**1. Admin API cost report** — authoritative, whole-organization, in real dollars. Needs an [Admin API key](https://platform.claude.com/settings/admin-keys) (`sk-ant-admin01-...`), a **different credential** from `ANTHROPIC_API_KEY` — a regular key is rejected:
+
+```
+export ANTHROPIC_ADMIN_KEY=sk-ant-admin01-...
+```
+
+Put that in your shell profile so every session inherits it. It's only ever sent to `api.anthropic.com/v1/organizations/cost_report`, read-only, never logged or written to disk. **Anthropic does not issue Admin keys to individual accounts** — the endpoint needs a real organization, so for most solo users this source is simply unavailable.
+
+**2. Local transcripts** — the fallback, used automatically when there's no working Admin key. super-status prices your own Claude Code transcripts since the snapshot, at list rates, the same arithmetic behind the `Cost` field. It needs no credential and no network. It is an **estimate** and is labelled `est.` wherever it renders, because it can only see this machine's Claude Code traffic — Console playground calls, other tools on the same key, and other machines are invisible to it. Override the rate table with `model_pricing` if Anthropic's prices move before super-status does.
+
+Messages are deduplicated on their API message id before pricing. Resuming or forking a session copies its history into a new transcript, and in a busy day close to half the assistant rows on disk are such copies — pricing each one inflates the estimate by nearly that much.
+
+**What you get in each state:**
+
+| State | Rendered |
+|---|---|
+| Balance declared, Admin key working | `Bal ▮▮▪▪▪▪▪▪▪▪ 18% $79.12/$96.49 (as of 01/09)` |
+| Balance declared, no Admin key | `Bal ▮▮▪▪▪▪▪▪▪▪ 18% $79.12/$96.49 (est. · as of 01/09)` |
+| Neither source available (no `python3`) | `Bal $96.49 (declared 01/09)` — the declared figure alone. No bar, because a bar with no spend figure would read 0% and quietly lie |
+| Balance declared, snapshot missing or malformed | A bold red line at the top: `API CREDIT SNAPSHOT DATE IS MISSING OR INVALID - ...` |
+| No balance declared | Nothing — the feature is fully inert, with no config reads, no scans, and no network calls |
+
+**Caveats worth knowing:**
+
+- The bar fills with what you have **spent**, like every other bar on the line — green early, red when the balance is nearly gone. Dollars remaining are in the text next to it.
+- Cost data lands roughly **5 minutes** behind the requests it describes, so the bar trails live spend slightly either way. `api_spend_cache_seconds` (default `300`) sets how often it refreshes.
+- The Admin report covers the **whole organization**, not just Claude Code — correct here, since so does the credit balance it's subtracted from. **Priority Tier spend is not in it**, so that portion goes uncounted.
+- The Admin report is **daily-granular**, so on that source a mid-day snapshot still counts that whole UTC day. The local estimator honours `HH:MM` exactly. With an Admin key, declare the balance near the start of a day for the tightest figure.
+- Both sources run **backgrounded, never inline**: each render prints the last completed result and, when it goes stale, spawns one refresh behind a lock. The statusline never blocks on the network or on a transcript scan.
 
 ### Mode 3 — OpenRouter
 
@@ -416,7 +506,7 @@ General reliability note: Claude Code is built and tested against Anthropic's fi
 
 ## Caches
 
-Everything super-status derives (LOC counts, transcript parses, git status, the OpenRouter credits response) is cached under `${XDG_CACHE_HOME:-$HOME/.cache}/super-status/`, created with `0700` permissions — private to your user, unlike the world-readable `/tmp` location used before v2.0.0. It's always safe to delete the whole directory; everything in it is re-derived on the next render. `doctor.sh` removes a legacy `/tmp/super-status` directory if it finds one.
+Everything super-status derives (LOC counts, transcript parses, git status, the OpenRouter credits response, the Anthropic cost-report spend total) is cached under `${XDG_CACHE_HOME:-$HOME/.cache}/super-status/`, created with `0700` permissions — private to your user, unlike the world-readable `/tmp` location used before v2.0.0. It's always safe to delete the whole directory; everything in it is re-derived on the next render. `doctor.sh` removes a legacy `/tmp/super-status` directory if it finds one.
 
 ## Troubleshooting
 

@@ -9,7 +9,10 @@ setup() {
     export HOME="$BATS_TEST_TMPDIR/home"
     export XDG_CACHE_HOME="$BATS_TEST_TMPDIR/cache"
     mkdir -p "$HOME/.claude/super-status"
-    unset SUPER_STATUS_DISABLE SUPER_STATUS_CONFIG ANTHROPIC_BASE_URL OPENROUTER_API_KEY COLUMNS
+    # ANTHROPIC_ADMIN_KEY is unset alongside the rest so a real key in the
+    # developer's environment can never turn a test run into live cost-report calls.
+    unset SUPER_STATUS_DISABLE SUPER_STATUS_CONFIG ANTHROPIC_BASE_URL OPENROUTER_API_KEY \
+          ANTHROPIC_ADMIN_KEY COLUMNS
     # shellcheck disable=SC1090
     source "$SCRIPT"
 }
@@ -631,4 +634,385 @@ EOF
     run_statusline "$MINIMAL_PAYLOAD"
     plain=$(strip_ansi "$output")
     [[ "$plain" == *"Fable "*" 66%"* ]]
+}
+
+# --- unit: account-mode + cost-report helpers -------------------------------
+
+@test "seat_tier_label titles a tier id and keeps its multiplier lowercase" {
+    [ "$(seat_tier_label "pro")" = "Pro" ]
+    [ "$(seat_tier_label "max_5x")" = "Max 5x" ]
+    [ "$(seat_tier_label "max_20x")" = "Max 20x" ]
+    [ "$(seat_tier_label "team_premium")" = "Team Premium" ]
+}
+
+@test "seat_tier_label prints nothing for an absent tier" {
+    [ -z "$(seat_tier_label "")" ]
+    [ -z "$(seat_tier_label "null")" ]
+}
+
+@test "format_cost_report_start keeps the declared calendar day in every zone" {
+    # Ahead of UTC is the case that breaks a naive UTC re-render: local midnight
+    # on 01/09 is still 31/08 in UTC, which would widen the report by a day.
+    epoch=$(TZ="Asia/Jerusalem" parse_subscription_date "01/09/2026")
+    [ "$(TZ="Asia/Jerusalem" format_cost_report_start "$epoch")" = "2026-09-01T00:00:00Z" ]
+    epoch=$(TZ="America/Los_Angeles" parse_subscription_date "01/09/2026")
+    [ "$(TZ="America/Los_Angeles" format_cost_report_start "$epoch")" = "2026-09-01T00:00:00Z" ]
+}
+
+@test "format_cost_report_start prints nothing for a non-epoch" {
+    [ -z "$(format_cost_report_start "not-a-date")" ]
+    [ -z "$(format_cost_report_start "")" ]
+}
+
+# --- unit: anthropic_spend_usd (Admin API cost report) ----------------------
+# Driven through a stubbed `curl`, so no network and no Admin key is involved.
+
+@test "anthropic_spend_usd sums every bucket across pages and converts cents to dollars" {
+    curl() {
+        local a url=""
+        for a in "$@"; do case "$a" in https://*) url="$a" ;; esac; done
+        case "$url" in
+            *page=page_two*)
+                echo '{"data":[{"results":[{"amount":"250.5"}]}],"has_more":false,"next_page":null}' ;;
+            *)
+                echo '{"data":[{"results":[{"amount":"1234.56"},{"amount":"65.44"}]},{"results":[]}],"has_more":true,"next_page":"page_two"}' ;;
+        esac
+    }
+    [ "$(anthropic_spend_usd "2026-09-01T00:00:00Z" "sk-ant-admin-x")" = "15.5050" ]
+}
+
+@test "anthropic_spend_usd reports a zero-spend window as 0, not as a failure" {
+    curl() { echo '{"data":[],"has_more":false,"next_page":null}'; }
+    run anthropic_spend_usd "2026-09-01T00:00:00Z" "sk-ant-admin-x"
+    [ "$status" -eq 0 ]
+    [ "$output" = "0.0000" ]
+}
+
+@test "anthropic_spend_usd fails rather than reading a rejected key as zero spend" {
+    curl() { echo '{"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}'; }
+    run anthropic_spend_usd "2026-09-01T00:00:00Z" "bad"
+    [ "$status" -ne 0 ]
+    [ -z "$output" ]
+}
+
+@test "anthropic_spend_usd fails on an empty response body" {
+    curl() { echo ""; }
+    run anthropic_spend_usd "2026-09-01T00:00:00Z" "bad"
+    [ "$status" -ne 0 ]
+}
+
+# --- e2e: account-mode badge ------------------------------------------------
+
+write_oauth_account() { # $1 billingType, $2 seatTier (JSON literal)
+    printf '{"oauthAccount":{"billingType":%s,"seatTier":%s}}' "$1" "$2" > "$HOME/.claude.json"
+}
+
+@test "prepaid billing renders an API badge before the model name" {
+    write_oauth_account '"prepaid"' 'null'
+    run_statusline "$MINIMAL_PAYLOAD"
+    [[ "$(strip_ansi "$output")" == *"◆ API Opus"* ]]
+}
+
+@test "invoice billing also renders the API badge" {
+    write_oauth_account '"invoice"' 'null'
+    run_statusline "$MINIMAL_PAYLOAD"
+    [[ "$(strip_ansi "$output")" == *"◆ API Opus"* ]]
+}
+
+@test "subscription billing renders Sub when no seat tier is published" {
+    write_oauth_account '"subscription"' 'null'
+    run_statusline "$MINIMAL_PAYLOAD"
+    [[ "$(strip_ansi "$output")" == *"◆ Sub Opus"* ]]
+}
+
+@test "a published seat tier names the plan instead of Sub" {
+    write_oauth_account '"subscription"' '"max_20x"'
+    run_statusline "$MINIMAL_PAYLOAD"
+    [[ "$(strip_ansi "$output")" == *"◆ Max 20x Opus"* ]]
+}
+
+@test "stdin rate_limits imply a subscription when ~/.claude.json is absent" {
+    run_statusline "$SUBSCRIPTION_PAYLOAD"
+    [[ "$(strip_ansi "$output")" == *"◆ Sub Opus"* ]]
+}
+
+@test "no account record and no rate_limits leaves the badge off" {
+    run_statusline "$MINIMAL_PAYLOAD"
+    [[ "$(strip_ansi "$output")" == *"◆ Opus"* ]]
+}
+
+@test "plan_label overrides the detected mode" {
+    write_oauth_account '"prepaid"' 'null'
+    echo '{"plan_label":"Max"}' > "$HOME/.claude/super-status/config.json"
+    run_statusline "$MINIMAL_PAYLOAD"
+    [[ "$(strip_ansi "$output")" == *"◆ Max Opus"* ]]
+}
+
+@test "behind a proxy the provider badge speaks and the mode badge stays out" {
+    write_oauth_account '"prepaid"' 'null'
+    ANTHROPIC_BASE_URL="https://openrouter.ai/api" run_statusline "$MINIMAL_PAYLOAD"
+    plain=$(strip_ansi "$output")
+    [[ "$plain" == *"◆ Opus"* ]]
+    [[ "$plain" != *"◆ API Opus"* ]]
+    [[ "$plain" == *"[OpenRouter]"* ]]
+}
+
+@test "an explicit plan_label still shows behind a proxy" {
+    echo '{"plan_label":"API"}' > "$HOME/.claude/super-status/config.json"
+    ANTHROPIC_BASE_URL="https://openrouter.ai/api" run_statusline "$MINIMAL_PAYLOAD"
+    [[ "$(strip_ansi "$output")" == *"◆ API Opus"* ]]
+}
+
+@test "display.mode off hides the badge" {
+    write_oauth_account '"prepaid"' 'null'
+    echo '{"display":{"mode":false}}' > "$HOME/.claude/super-status/config.json"
+    run_statusline "$MINIMAL_PAYLOAD"
+    plain=$(strip_ansi "$output")
+    [[ "$plain" == *"◆ Opus"* ]]
+    [[ "$plain" != *"API"* ]]
+}
+
+# --- e2e: prepaid API credit bar --------------------------------------------
+
+seed_spend() { # $1 dd/MM/yyyy, $2 dollars spent, $3 source (admin|local, default admin)
+    local epoch dir
+    epoch=$(parse_subscription_date "$1")
+    dir="$XDG_CACHE_HOME/super-status/anthropic-cost"
+    mkdir -p "$dir"
+    printf '%s\t%s' "${3:-admin}" "$2" > "$dir/spend-${epoch}.txt"
+    # Stamped fresh so the render reads this instead of spawning a real fetch.
+    touch "$dir/spend-${epoch}.stamp"
+}
+
+@test "a fetched spend figure renders a used-percentage credit bar" {
+    write_oauth_account '"prepaid"' 'null'
+    seed_spend "01/09/2026" "17.37"
+    echo '{"api_credit_balance":96.49,"api_credit_as_of":"01/09/2026"}' > "$HOME/.claude/super-status/config.json"
+    run_statusline "$MINIMAL_PAYLOAD"
+    plain=$(strip_ansi "$output")
+    [[ "$plain" == *"Bal "*" 18% \$79.12/\$96.49 (as of 01/09)"* ]]
+}
+
+@test "spend past the declared balance clamps at 100% and \$0.00 left" {
+    write_oauth_account '"prepaid"' 'null'
+    seed_spend "01/09/2026" "120.00"
+    echo '{"api_credit_balance":96.49,"api_credit_as_of":"01/09/2026"}' > "$HOME/.claude/super-status/config.json"
+    run_statusline "$MINIMAL_PAYLOAD"
+    plain=$(strip_ansi "$output")
+    [[ "$plain" == *"100% \$0.00/\$96.49"* ]]
+}
+
+@test "with no spend figure yet the balance shows without a bar" {
+    write_oauth_account '"prepaid"' 'null'
+    echo '{"api_credit_balance":96.49,"api_credit_as_of":"01/09/2026"}' > "$HOME/.claude/super-status/config.json"
+    run_statusline "$MINIMAL_PAYLOAD"
+    plain=$(strip_ansi "$output")
+    [[ "$plain" == *"Bal \$96.49 (declared 01/09)"* ]]
+    [[ "$plain" != *"Bal ▮"* ]]
+    [[ "$plain" != *"Bal ▪"* ]]
+}
+
+@test "moving the snapshot date discards the spend cached against the old one" {
+    write_oauth_account '"prepaid"' 'null'
+    seed_spend "01/09/2026" "17.37"
+    echo '{"api_credit_balance":96.49,"api_credit_as_of":"15/09/2026"}' > "$HOME/.claude/super-status/config.json"
+    run_statusline "$MINIMAL_PAYLOAD"
+    plain=$(strip_ansi "$output")
+    [[ "$plain" == *"Bal \$96.49 (declared 15/09)"* ]]
+    [[ "$plain" != *"79.12"* ]]
+}
+
+@test "a missing or malformed snapshot date warns instead of rendering a bar" {
+    write_oauth_account '"prepaid"' 'null'
+    echo '{"api_credit_balance":96.49,"api_credit_as_of":"2026-09-01"}' > "$HOME/.claude/super-status/config.json"
+    run_statusline "$MINIMAL_PAYLOAD"
+    plain=$(strip_ansi "$output")
+    [[ "$plain" == *"API CREDIT SNAPSHOT DATE IS MISSING OR INVALID"* ]]
+    [[ "$plain" != *"Bal"* ]]
+
+    echo '{"api_credit_balance":96.49}' > "$HOME/.claude/super-status/config.json"
+    run_statusline "$MINIMAL_PAYLOAD"
+    [[ "$(strip_ansi "$output")" == *"API CREDIT SNAPSHOT DATE IS MISSING OR INVALID"* ]]
+}
+
+@test "the credit bar stays out of a subscription statusline" {
+    write_oauth_account '"subscription"' 'null'
+    seed_spend "01/09/2026" "17.37"
+    echo '{"api_credit_balance":96.49,"api_credit_as_of":"01/09/2026"}' > "$HOME/.claude/super-status/config.json"
+    run_statusline "$SUBSCRIPTION_PAYLOAD"
+    [[ "$(strip_ansi "$output")" != *"Bal"* ]]
+}
+
+@test "declaring no balance leaves the credit bar off entirely" {
+    write_oauth_account '"prepaid"' 'null'
+    run_statusline "$MINIMAL_PAYLOAD"
+    [[ "$(strip_ansi "$output")" != *"Bal"* ]]
+}
+
+@test "display.balance off hides the credit bar" {
+    write_oauth_account '"prepaid"' 'null'
+    seed_spend "01/09/2026" "17.37"
+    echo '{"api_credit_balance":96.49,"api_credit_as_of":"01/09/2026","display":{"balance":false}}' > "$HOME/.claude/super-status/config.json"
+    run_statusline "$MINIMAL_PAYLOAD"
+    [[ "$(strip_ansi "$output")" != *"Bal"* ]]
+}
+
+# --- unit: local_spend_usd (transcript-priced fallback) ---------------------
+
+seed_transcript() { # $1 projects dir, $2 iso timestamp, $3 model, $4 usage json
+    mkdir -p "$1/proj"
+    printf '{"type":"assistant","timestamp":"%s","message":{"model":"%s","usage":%s}}\n' \
+        "$2" "$3" "$4" >> "$1/proj/session.jsonl"
+}
+
+iso_days_ago() { date -u -v-"$1"d "+%Y-%m-%dT%H:%M:%S.000Z" 2>/dev/null \
+              || date -u -d "$1 days ago" "+%Y-%m-%dT%H:%M:%S.000Z"; }
+
+epoch_days_ago() { date -v-"$1"d +%s 2>/dev/null || date -d "$1 days ago" +%s; }
+
+@test "local_spend_usd prices uncached input and output at list rates" {
+    proj="$BATS_TEST_TMPDIR/projects"
+    seed_transcript "$proj" "$(iso_days_ago 1)" "claude-opus-5" \
+        '{"input_tokens":1000000,"output_tokens":1000000}'
+    # Opus 5 is $5/MTok in, $25/MTok out.
+    [ "$(local_spend_usd "$(epoch_days_ago 3)" "$proj")" = "30.0000" ]
+}
+
+@test "local_spend_usd prices cache writes at 1.25x/2x and reads at 0.1x input" {
+    proj="$BATS_TEST_TMPDIR/projects"
+    seed_transcript "$proj" "$(iso_days_ago 1)" "claude-sonnet-5" \
+        '{"cache_creation":{"ephemeral_5m_input_tokens":1000000,"ephemeral_1h_input_tokens":1000000},"cache_read_input_tokens":1000000}'
+    # Sonnet 5 input is $2/MTok: (1.25 + 2 + 0.1) x 2 = 6.70
+    [ "$(local_spend_usd "$(epoch_days_ago 3)" "$proj")" = "6.7000" ]
+}
+
+@test "local_spend_usd prices an undifferentiated cache_creation total at the 5m rate" {
+    proj="$BATS_TEST_TMPDIR/projects"
+    seed_transcript "$proj" "$(iso_days_ago 1)" "claude-sonnet-5" \
+        '{"cache_creation_input_tokens":1000000}'
+    [ "$(local_spend_usd "$(epoch_days_ago 3)" "$proj")" = "2.5000" ]
+}
+
+@test "local_spend_usd excludes messages older than the snapshot" {
+    proj="$BATS_TEST_TMPDIR/projects"
+    seed_transcript "$proj" "$(iso_days_ago 30)" "claude-opus-5" '{"output_tokens":1000000}'
+    seed_transcript "$proj" "$(iso_days_ago 1)" "claude-opus-5" '{"output_tokens":1000000}'
+    [ "$(local_spend_usd "$(epoch_days_ago 3)" "$proj")" = "25.0000" ]
+}
+
+@test "local_spend_usd ignores non-assistant rows and unpriceable models" {
+    proj="$BATS_TEST_TMPDIR/projects"
+    mkdir -p "$proj/proj"
+    printf '{"type":"user","timestamp":"%s"}\n' "$(iso_days_ago 1)" > "$proj/proj/session.jsonl"
+    seed_transcript "$proj" "$(iso_days_ago 1)" "some-other-vendor-model" '{"output_tokens":1000000}'
+    [ "$(local_spend_usd "$(epoch_days_ago 3)" "$proj")" = "0.0000" ]
+}
+
+@test "local_spend_usd survives a malformed line without losing the rest of the file" {
+    proj="$BATS_TEST_TMPDIR/projects"
+    mkdir -p "$proj/proj"
+    echo '{"type":"assistant", this is not json' > "$proj/proj/session.jsonl"
+    seed_transcript "$proj" "$(iso_days_ago 1)" "claude-opus-5" '{"output_tokens":1000000}'
+    [ "$(local_spend_usd "$(epoch_days_ago 3)" "$proj")" = "25.0000" ]
+}
+
+@test "model_pricing overrides a built-in rate, longest pattern winning" {
+    proj="$BATS_TEST_TMPDIR/projects"
+    seed_transcript "$proj" "$(iso_days_ago 1)" "claude-opus-5" '{"output_tokens":1000000}'
+    rates=$(printf 'opus\t1/2\nopus-5\t100/200\n')
+    [ "$(local_spend_usd "$(epoch_days_ago 3)" "$proj" "$rates")" = "200.0000" ]
+}
+
+@test "local_spend_usd fails on a missing projects directory or a bad epoch" {
+    run local_spend_usd "$(epoch_days_ago 3)" "$BATS_TEST_TMPDIR/nope"
+    [ "$status" -ne 0 ]
+    run local_spend_usd "not-an-epoch" "$BATS_TEST_TMPDIR"
+    [ "$status" -ne 0 ]
+}
+
+# --- e2e: the estimate is labelled as one -----------------------------------
+
+@test "a locally-estimated spend figure carries an est. caveat" {
+    write_oauth_account '"prepaid"' 'null'
+    seed_spend "01/09/2026" "17.37" "local"
+    echo '{"api_credit_balance":96.49,"api_credit_as_of":"01/09/2026"}' > "$HOME/.claude/super-status/config.json"
+    run_statusline "$MINIMAL_PAYLOAD"
+    [[ "$(strip_ansi "$output")" == *"18% \$79.12/\$96.49 (est. · as of 01/09)"* ]]
+}
+
+@test "an Admin-API spend figure carries no caveat" {
+    write_oauth_account '"prepaid"' 'null'
+    seed_spend "01/09/2026" "17.37" "admin"
+    echo '{"api_credit_balance":96.49,"api_credit_as_of":"01/09/2026"}' > "$HOME/.claude/super-status/config.json"
+    plain=$(strip_ansi "$(run_statusline "$MINIMAL_PAYLOAD"; printf '%s' "$output")")
+    [[ "$plain" == *"18% \$79.12/\$96.49 (as of 01/09)"* ]]
+    [[ "$plain" != *"est."* ]]
+}
+
+@test "the snapshot marker is a date, never a clock time, even when taken today" {
+    write_oauth_account '"prepaid"' 'null'
+    today=$(date +%d/%m/%Y)
+    seed_spend "$today" "17.37" "local"
+    printf '{"api_credit_balance":96.49,"api_credit_as_of":"%s"}' "$today" \
+        > "$HOME/.claude/super-status/config.json"
+    run_statusline "$MINIMAL_PAYLOAD"
+    plain=$(strip_ansi "$output")
+    [[ "$plain" == *"as of $(date +%d/%m))"* ]]
+    [[ "$plain" != *"as of 00:00"* ]]
+}
+
+# --- unit: parse_snapshot_moment -------------------------------------------
+
+@test "parse_snapshot_moment treats a bare date as midnight" {
+    [ "$(parse_snapshot_moment "19/09/2026")" = "$(parse_subscription_date "19/09/2026")" ]
+}
+
+@test "parse_snapshot_moment adds the clock time when one is given" {
+    midnight=$(parse_subscription_date "19/09/2026")
+    [ "$(parse_snapshot_moment "19/09/2026 14:35")" = "$(( midnight + 14 * 3600 + 35 * 60 ))" ]
+    [ "$(parse_snapshot_moment "19/09/2026 00:01")" = "$(( midnight + 60 ))" ]
+    [ "$(parse_snapshot_moment "19/09/2026 23:59")" = "$(( midnight + 86340 ))" ]
+}
+
+@test "parse_snapshot_moment rejects an impossible clock or trailing junk" {
+    [ -z "$(parse_snapshot_moment "19/09/2026 24:00")" ]
+    [ -z "$(parse_snapshot_moment "19/09/2026 12:60")" ]
+    [ -z "$(parse_snapshot_moment "19/09/2026 nope")" ]
+    [ -z "$(parse_snapshot_moment "2026-09-19")" ]
+    [ -z "$(parse_snapshot_moment "")" ]
+}
+
+@test "an afternoon snapshot excludes that morning's spend" {
+    proj="$BATS_TEST_TMPDIR/projects"
+    day=$(date -u -v-2d +%Y-%m-%d 2>/dev/null || date -u -d "2 days ago" +%Y-%m-%d)
+    seed_transcript "$proj" "${day}T02:00:00.000Z" "claude-opus-5" '{"output_tokens":1000000}'
+    seed_transcript "$proj" "${day}T23:30:00.000Z" "claude-opus-5" '{"output_tokens":1000000}'
+    # Both rows land on the same day; anchoring at 12:00 UTC that day must keep
+    # only the later one — the case that breaks if a snapshot is read as midnight.
+    noon=$(parse_iso_epoch "${day}T12:00:00Z")
+    [ "$(local_spend_usd "$noon" "$proj")" = "25.0000" ]
+}
+
+# --- unit: duplicate-row handling ------------------------------------------
+
+@test "local_spend_usd prices a message replayed into another transcript once" {
+    proj="$BATS_TEST_TMPDIR/projects"
+    mkdir -p "$proj/a" "$proj/b"
+    row=$(printf '{"type":"assistant","requestId":"req_1","timestamp":"%s","message":{"id":"msg_1","model":"claude-opus-5","usage":{"output_tokens":1000000}}}' "$(iso_days_ago 1)")
+    # The same message, as a resumed session copies it into a second file.
+    echo "$row" > "$proj/a/session.jsonl"
+    echo "$row" > "$proj/b/session.jsonl"
+    [ "$(local_spend_usd "$(epoch_days_ago 3)" "$proj")" = "25.0000" ]
+}
+
+@test "local_spend_usd still prices distinct messages and id-less rows" {
+    proj="$BATS_TEST_TMPDIR/projects"
+    mkdir -p "$proj/a"
+    ts=$(iso_days_ago 1)
+    {
+        printf '{"type":"assistant","timestamp":"%s","message":{"id":"msg_1","model":"claude-opus-5","usage":{"output_tokens":1000000}}}\n' "$ts"
+        printf '{"type":"assistant","timestamp":"%s","message":{"id":"msg_2","model":"claude-opus-5","usage":{"output_tokens":1000000}}}\n' "$ts"
+        printf '{"type":"assistant","timestamp":"%s","message":{"model":"claude-opus-5","usage":{"output_tokens":1000000}}}\n' "$ts"
+    } > "$proj/a/session.jsonl"
+    [ "$(local_spend_usd "$(epoch_days_ago 3)" "$proj")" = "75.0000" ]
 }

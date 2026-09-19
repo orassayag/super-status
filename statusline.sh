@@ -66,8 +66,27 @@ cfg_external_usage_max_age=1800
 # case-insensitive substring of the displayed model name to the text to show.
 cfg_model_params_patterns=()
 cfg_model_params_labels=()
+# Per-MTok list-rate overrides for the local spend estimate, "pattern": "in/out"
+# (e.g. {"opus-5": "5/25"}). Matching is the same longest-substring-of-the-model-id
+# rule as model_params. Empty = the estimator's built-in table, which is Anthropic
+# list pricing at the time of writing and will drift as rates change.
+cfg_model_pricing_patterns=()
+cfg_model_pricing_labels=()
+# Account-mode badge ("◆ API Opus 5"). Auto-detection reads ~/.claude.json's
+# oauthAccount.{billingType,seatTier}: billingType separates API billing from a
+# subscription, but seatTier — the only thing that names Pro vs. Max — is null
+# on most accounts, so plan_label is the override that makes the tier visible.
+cfg_plan_label=""
+# Prepaid API credit bar. Anthropic publishes no credit-balance endpoint (the
+# Console's "Credit balance" card is not in the public API), so the balance is a
+# user-declared snapshot and everything spent since it comes from the Admin API
+# cost report. Empty balance = the whole feature is inert.
+cfg_api_credit_balance=""
+cfg_api_credit_as_of=""
+cfg_api_spend_cache_seconds=300
 
 cfg_show_model=1
+cfg_show_mode=1
 cfg_show_repo=1
 cfg_show_branch=1
 cfg_show_worktree=1
@@ -316,6 +335,21 @@ grade_color() {
     esac
 }
 
+# Anthropic seat-tier id -> display text: "max_20x" -> "Max 20x", "pro" -> "Pro".
+# An id this doesn't recognize is Title-Cased word by word rather than dropped,
+# so a tier introduced after this ships still renders something truthful.
+seat_tier_label() {
+    local _raw="$1" _word _out=""
+    { [ -n "$_raw" ] && [ "$_raw" != "null" ]; } || return
+    for _word in ${_raw//_/ }; do
+        case "$_word" in
+            [0-9]*[xX]) _out+=" $(tr '[:upper:]' '[:lower:]' <<<"$_word")" ;;
+            *) _out+=" $(tr '[:lower:]' '[:upper:]' <<<"${_word:0:1}")${_word:1}" ;;
+        esac
+    done
+    printf '%s' "${_out# }"
+}
+
 # $1 pct, $2 warning threshold, $3 critical threshold
 usage_color() {
     local u="$1" warn="$2" crit="$3"
@@ -327,12 +361,35 @@ usage_color() {
     fi
 }
 
+# Bare "dd/MM" for a date that is a calendar day rather than a moment — the
+# credit snapshot. Deliberately not format_reset_marker, which collapses today
+# to a clock time: correct for a reset that is hours away, nonsense for a
+# snapshot taken at midnight, which would read "as of 00:00".
+format_day_month_epoch() {
+    local epoch="$1"
+    is_num "$epoch" || { echo ""; return; }
+    date -d "@${epoch%.*}" +"%d/%m" 2>/dev/null || date -r "${epoch%.*}" +"%d/%m" 2>/dev/null || echo ""
+}
+
 # dd/MM/yyyy only — used for the subscription cycle renewal date and the
 # weekly reset date.
 format_date_epoch() {
     local epoch="$1"
     is_num "$epoch" || { echo ""; return; }
     date -d "@${epoch%.*}" +"%d/%m/%Y" 2>/dev/null || date -r "${epoch%.*}" +"%d/%m/%Y" 2>/dev/null || echo ""
+}
+
+# epoch -> "YYYY-MM-DDT00:00:00Z", the `starting_at` the Admin API cost report
+# takes. Deliberately reads the epoch's LOCAL calendar date and pins that date
+# to the UTC boundary the report snaps its buckets to: the epoch comes from
+# parse_subscription_date, i.e. local midnight on the date the user declared, so
+# re-rendering it in UTC would move the window a day west of that date in every
+# zone ahead of UTC and silently bill an extra day's spend against the snapshot.
+format_cost_report_start() {
+    local epoch="$1" _day
+    is_num "$epoch" || { echo ""; return; }
+    _day=$(date -d "@${epoch%.*}" +"%Y-%m-%d" 2>/dev/null || date -r "${epoch%.*}" +"%Y-%m-%d" 2>/dev/null)
+    [ -n "$_day" ] && printf '%sT00:00:00Z' "$_day"
 }
 
 # Absolute "when" marker paired with a relative reset countdown: "HH:MM" when the
@@ -379,6 +436,29 @@ parse_subscription_date() {
     _back=$(date -r "$_epoch" +%d/%m/%Y 2>/dev/null \
          || date -d "@${_epoch}" +%d/%m/%Y 2>/dev/null)
     [ "$_back" = "$_d" ] && printf '%s' "$_epoch"
+}
+
+# Credit-snapshot moment: "dd/MM/yyyy" (midnight) or "dd/MM/yyyy HH:MM" (that
+# minute). A balance read off the Console is true at an instant, not for a whole
+# day — anchoring an afternoon reading to midnight would re-subtract everything
+# already spent that day, so /super-status:credits records the clock time and
+# this accepts it. The bare-date form stays valid and means midnight, which is
+# what backdating a top-up to a past day should mean.
+parse_snapshot_moment() {
+    local _raw _date _clock _epoch _hour _minute
+    _raw=$(trim_ws "$1")
+    _date="${_raw%% *}"
+    _epoch=$(parse_subscription_date "$_date")
+    [ -n "$_epoch" ] || return
+    if [ "$_raw" != "$_date" ]; then
+        _clock=$(trim_ws "${_raw#"$_date"}")
+        [[ "$_clock" =~ ^([0-2][0-9]):([0-5][0-9])$ ]] || return
+        _hour=$(( 10#${BASH_REMATCH[1]} ))
+        _minute=$(( 10#${BASH_REMATCH[2]} ))
+        [ "$_hour" -le 23 ] || return
+        _epoch=$(( _epoch + _hour * 3600 + _minute * 60 ))
+    fi
+    printf '%s' "$_epoch"
 }
 
 days_in_month() {
@@ -494,6 +574,184 @@ parse_iso_epoch() {
     date -d "$_t" +%s 2>/dev/null || date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$_t" +%s 2>/dev/null
 }
 
+# Total USD spent since $1 (an RFC 3339 day boundary), from the Admin API cost
+# report, printed to stdout; non-zero exit means "no trustworthy figure", which
+# callers must not read as zero spend. $2 is an Admin API key (sk-ant-admin...),
+# which is a different credential from ANTHROPIC_API_KEY. Lives above the source
+# guard only so tests can drive it with a stubbed `curl`; it is the one function
+# up here that touches the network, and no caller runs it inline — see the
+# credit-bar block in the render flow for why it is always backgrounded.
+anthropic_spend_usd() {
+    local _start_iso="$1" _key="$2"
+    local _page="" _url _resp _sum=0 _partial _has_more="" _pages=0
+    while [ "$_pages" -lt 12 ]; do
+        _url="https://api.anthropic.com/v1/organizations/cost_report?starting_at=${_start_iso}&bucket_width=1d&limit=31"
+        [ -n "$_page" ] && _url="${_url}&page=${_page}"
+        _resp=$(curl -s --max-time 10 "$_url" \
+            -H "anthropic-version: 2023-06-01" \
+            -H "x-api-key: ${_key}" \
+            -H "User-Agent: super-status (https://github.com/orassayag/super-status)" 2>/dev/null)
+        [ -n "$_resp" ] || return 1
+        # An error body (rejected key, individual account with no org) carries no
+        # .data array. Bail rather than record its absence as a real zero spend.
+        IFS=$'\t' read -r _partial _has_more _page <<< "$(jq -r '
+            def s(v): if v == null then "" else (v | tostring) end;
+            if (.data | type) != "array" then empty
+            else [ ([.data[].results[]?.amount // "0" | tonumber] | add // 0),
+                   (if .has_more then "1" else "0" end),
+                   s(.next_page) ] | @tsv
+            end' <<< "$_resp" 2>/dev/null)"
+        is_num "$_partial" || return 1
+        _sum=$(awk "BEGIN{printf \"%.6f\", $_sum + $_partial}")
+        _pages=$(( _pages + 1 ))
+        { [ "$_has_more" = "1" ] && [ -n "$_page" ]; } || break
+    done
+    # The report states amounts as decimal strings in cents; the bar talks dollars.
+    awk "BEGIN{printf \"%.4f\", $_sum / 100}"
+}
+
+# Total USD spent since epoch $1, priced from this machine's own Claude Code
+# transcripts: the fallback for when the Admin API cost report is unreachable,
+# which for an individual account is always — Anthropic does not issue Admin
+# API keys without an organization. $2 is the projects directory holding the
+# per-session JSONL files; $3 is an optional "pattern<TAB>in/out" list of
+# per-MTok rate overrides, longest matching pattern winning, same matching rule
+# as model_params.
+#
+# Necessarily an ESTIMATE, and labelled as one wherever it renders: it prices
+# only the traffic this machine's Claude Code produced, so Console playground
+# calls, other tools sharing the key, and other machines are invisible to it.
+# It prices at list rates, which is what Claude Code's own Cost field does too.
+local_spend_usd() {
+    local _as_of="$1" _projects="$2" _rates="${3:-}"
+    is_num "$_as_of" || return 1
+    [ -d "$_projects" ] || return 1
+    python3 - "$_as_of" "$_projects" "$_rates" 2>/dev/null <<'PY_LOCAL_SPEND'
+import calendar
+import json
+import os
+import sys
+
+as_of = int(sys.argv[1])
+projects = sys.argv[2]
+overrides = sys.argv[3] if len(sys.argv) > 3 else ''
+
+# USD per million tokens, (input, output), keyed by a lowercase substring of the
+# model id; the longest match wins, so "opus-4-6" can differ from "opus". These
+# are Anthropic list rates and they do change — model_pricing in config.json
+# overrides any of them without anyone editing this table.
+RATES = {
+    'fable-5': (10.0, 50.0),
+    'mythos-5': (10.0, 50.0),
+    'opus-5': (5.0, 25.0),
+    'opus-4-8': (5.0, 25.0),
+    'opus-4-7': (5.0, 25.0),
+    'opus-4-6': (5.0, 25.0),
+    'sonnet-5': (2.0, 10.0),
+    'sonnet-4-6': (3.0, 15.0),
+    'haiku-4-5': (1.0, 5.0),
+}
+# Cache tokens are priced off the input rate: a 5-minute write costs 1.25x, a
+# 1-hour write 2x, and a read 0.1x.
+WRITE_5M, WRITE_1H, READ = 1.25, 2.0, 0.1
+
+for line in overrides.splitlines():
+    pattern, _, rate = line.strip().partition('\t')
+    parts = rate.split('/')
+    if pattern and len(parts) == 2:
+        try:
+            RATES[pattern.lower()] = (float(parts[0]), float(parts[1]))
+        except ValueError:
+            pass
+
+
+def rate_for(model):
+    model = (model or '').lower()
+    best = None
+    for pattern, rate in RATES.items():
+        if pattern in model and (best is None or len(pattern) > len(best[0])):
+            best = (pattern, rate)
+    return best[1] if best else None
+
+
+def to_epoch(stamp):
+    # Transcript timestamps are UTC ISO-8601 ("2026-09-19T08:21:04.123Z"). Parsed
+    # by hand rather than with datetime.fromisoformat, which rejects the trailing
+    # Z before Python 3.11 and would there silently drop every line.
+    try:
+        date, _, clock = stamp.partition('T')
+        year, month, day = (int(v) for v in date.split('-'))
+        hour, minute, second = clock.rstrip('Z').split(':')[:3]
+        return calendar.timegm((year, month, day, int(hour), int(minute),
+                                int(float(second)), 0, 0, 0))
+    except (ValueError, AttributeError):
+        return None
+
+
+# One assistant message reaches more than one transcript — resuming or forking
+# a session copies its history into the new file, and in practice ~45% of rows
+# in a day's transcripts are such copies. Billing happened once, so pricing
+# every copy inflates the estimate by nearly half. Deduplicated on the API's own
+# message id (requestId as the fallback); a row carrying neither is priced,
+# since dropping it would under-count and it cannot be matched to anything.
+seen_messages = set()
+
+total = 0.0
+for project in os.scandir(projects):
+    if not project.is_dir():
+        continue
+    for entry in os.scandir(project.path):
+        # A file untouched since the snapshot holds nothing inside the window.
+        if not entry.name.endswith('.jsonl') or entry.stat().st_mtime < as_of:
+            continue
+        try:
+            with open(entry.path, encoding='utf-8', errors='replace') as fh:
+                for line in fh:
+                    if '"assistant"' not in line:
+                        continue
+                    try:
+                        row = json.loads(line)
+                    except ValueError:
+                        continue
+                    if row.get('type') != 'assistant':
+                        continue
+                    stamp = to_epoch(row.get('timestamp'))
+                    if stamp is None or stamp < as_of:
+                        continue
+                    message = row.get('message') or {}
+                    identity = message.get('id') or row.get('requestId')
+                    if identity:
+                        if identity in seen_messages:
+                            continue
+                        seen_messages.add(identity)
+                    usage = message.get('usage') or {}
+                    rate = rate_for(message.get('model'))
+                    if not rate:
+                        continue
+                    rate_in, rate_out = rate
+                    creation = usage.get('cache_creation') or {}
+                    write_5m = creation.get('ephemeral_5m_input_tokens')
+                    write_1h = creation.get('ephemeral_1h_input_tokens')
+                    if write_5m is None and write_1h is None:
+                        # Older rows carry only the undifferentiated total; price
+                        # it at the 5-minute rate, which is the default TTL.
+                        write_5m = usage.get('cache_creation_input_tokens') or 0
+                        write_1h = 0
+                    tokens_in = (
+                        (usage.get('input_tokens') or 0)
+                        + (write_5m or 0) * WRITE_5M
+                        + (write_1h or 0) * WRITE_1H
+                        + (usage.get('cache_read_input_tokens') or 0) * READ
+                    )
+                    total += tokens_in * rate_in / 1e6
+                    total += (usage.get('output_tokens') or 0) * rate_out / 1e6
+        except OSError:
+            continue
+
+print('%.4f' % total)
+PY_LOCAL_SPEND
+}
+
 # ---------------------------------------------------------------------------
 # Everything below is the render flow; sourcing the script (tests) stops here
 # so the pure functions above are unit-testable without stdin or side effects.
@@ -548,7 +806,7 @@ apply_preset() {
             ;;
         minimal)
             for _v in repo worktree lines_changed version git_dirty git_ahead_behind \
-                      git_file_stats provider subscription cost total_tokens loc \
+                      git_file_stats provider mode subscription cost total_tokens loc \
                       session_time thinking_time cache_ratio efficiency tool_calls \
                       activity agents todos orchestrator; do
                 printf -v "cfg_show_${_v}" '%s' 0
@@ -576,6 +834,10 @@ if [ -f "$CONFIG_FILE" ]; then
             ["context_value", s(.context_value)],
             ["auto_compact_window", s(.auto_compact_window)],
             ["model_source", s(.model_source)],
+            ["plan_label", s(.plan_label)],
+            ["api_credit_balance", s(.api_credit_balance)],
+            ["api_credit_as_of", s(.api_credit_as_of)],
+            ["api_spend_cache_seconds", s(.api_spend_cache_seconds)],
             ["external_usage_path", s(.external_usage_path)],
             ["external_usage_max_age", s(.external_usage_max_age)],
             ["lines", (try (.lines | map(join(",")) | join("|")) catch "")],
@@ -583,6 +845,7 @@ if [ -f "$CONFIG_FILE" ]; then
             ["push_critical_threshold", s(.git.push_critical_threshold)]
           ]
           + ((.model_params // {}) | to_entries | map(["model_params_" + .key, s(.value)]))
+          + ((.model_pricing // {}) | to_entries | map(["model_pricing_" + .key, s(.value)]))
           + ((.display // {}) | to_entries | map(["display_" + .key, s(.value)]))
           + ((.colors // {}) | to_entries | map(["color_" + .key, s(.value)]))
           + ((.thresholds // {}) | to_entries | map(["threshold_" + .key, s(.value)]))
@@ -603,6 +866,10 @@ if [ -f "$CONFIG_FILE" ]; then
                 context_value) case "$_v" in percent|tokens|remaining|both) cfg_context_value="$_v" ;; esac ;;
                 auto_compact_window) is_num "$_v" && [ "${_v%.*}" -ge 1000 ] && cfg_auto_compact_window="${_v%.*}" ;;
                 model_source) case "$_v" in stdin|transcript|auto) cfg_model_source="$_v" ;; esac ;;
+                plan_label) [ -n "$_v" ] && cfg_plan_label=$(trim_ws "$_v") ;;
+                api_credit_balance) is_num "$_v" && cfg_api_credit_balance="$_v" ;;
+                api_credit_as_of) [ -n "$_v" ] && cfg_api_credit_as_of=$(trim_ws "$_v") ;;
+                api_spend_cache_seconds) is_num "$_v" && [ "${_v%.*}" -ge 60 ] && cfg_api_spend_cache_seconds="${_v%.*}" ;;
                 external_usage_path) [ -n "$_v" ] && cfg_external_usage_path="$_v" ;;
                 external_usage_max_age) is_num "$_v" && [ "${_v%.*}" -ge 0 ] && cfg_external_usage_max_age="${_v%.*}" ;;
                 model_params_*)
@@ -612,13 +879,20 @@ if [ -f "$CONFIG_FILE" ]; then
                         cfg_model_params_labels+=("$_v")
                     fi
                     ;;
+                model_pricing_*)
+                    _p="${_k#model_pricing_}"
+                    if [ -n "$_p" ] && [ -n "$_v" ]; then
+                        cfg_model_pricing_patterns+=("$_p")
+                        cfg_model_pricing_labels+=("$_v")
+                    fi
+                    ;;
                 lines) [ -n "$_v" ] && cfg_lines="$_v" ;;
                 push_warning_threshold) is_num "$_v" && cfg_push_warning="${_v%.*}" ;;
                 push_critical_threshold) is_num "$_v" && cfg_push_critical="${_v%.*}" ;;
                 display_*)
                     _b=$(to_bool "$_v") || continue
                     case "${_k#display_}" in
-                        model|repo|branch|worktree|lines_changed|version|git_dirty|git_ahead_behind|git_file_stats|provider|effort|subscription|sessions|balance|context|cost|total_tokens|loc|session_time|thinking_time|cache_ratio|efficiency|tool_calls|activity|agents|todos|orchestrator)
+                        model|mode|repo|branch|worktree|lines_changed|version|git_dirty|git_ahead_behind|git_file_stats|provider|effort|subscription|sessions|balance|context|cost|total_tokens|loc|session_time|thinking_time|cache_ratio|efficiency|tool_calls|activity|agents|todos|orchestrator)
                             printf -v "cfg_show_${_k#display_}" '%s' "$_b" ;;
                     esac
                     ;;
@@ -665,6 +939,8 @@ _c=$(resolve_color "$cfg_color_bar_empty") && C_BAR_EMPTY="$_c"
 case "$cfg_language" in
     en|*)
         L_MODEL="◆"
+        L_MODE_API="API"
+        L_MODE_SUB="Sub"
         L_SUBSCRIPTION="Sub"
         L_FIVE_HOUR="5h"
         L_BALANCE="Bal"
@@ -693,6 +969,10 @@ case "$cfg_language" in
         L_LEFT="left"
         L_SUB_MISSING='SUBSCRIPTION START DATE IS MISSING - ADD IT TO THE CLAUDE.MD: "subscription_start_date": "dd/MM/yyyy"'
         L_SUB_INVALID='SUBSCRIPTION START DATE IS INVALID - ADD IT TO THE CLAUDE.MD: "subscription_start_date": "dd/MM/yyyy"'
+        L_BAL_AS_OF="as of"
+        L_BAL_ESTIMATE="est."
+        L_BAL_DECLARED="declared"
+        L_BAL_INVALID='API CREDIT SNAPSHOT DATE IS MISSING OR INVALID - ADD IT TO CONFIG.JSON: "api_credit_as_of": "dd/MM/yyyy [HH:MM]"'
         ;;
 esac
 
@@ -900,6 +1180,52 @@ esac
 
 IS_SUBSCRIPTION=0
 is_num "$five_util_probe" && is_num "$seven_util_probe" && IS_SUBSCRIPTION=1
+
+# ---------------------------------------------------------------------------
+# Account mode — how this account pays: "API" (prepaid/invoice credit billing)
+# or a named subscription tier. ~/.claude.json's oauthAccount is the only local
+# record of it; its seatTier names the tier on accounts where Anthropic
+# populates it, which it does not for most subscribers, so a config-declared
+# plan_label outranks everything. Behind a proxy none of this describes who is
+# actually billed, so the [provider] badge speaks for the backend instead.
+# ---------------------------------------------------------------------------
+ACCOUNT_MODE=""
+ACCOUNT_MODE_KIND=""
+
+resolve_account_mode() {
+    local _billing="" _seat=""
+    if [ -f "$HOME/.claude.json" ]; then
+        IFS=$'\t' read -r _billing _seat <<< "$(jq -r '
+            def s(v): if v == null then "" else (v | tostring) end;
+            [s(.oauthAccount.billingType), s(.oauthAccount.seatTier)] | @tsv' \
+            "$HOME/.claude.json" 2>/dev/null)"
+    fi
+    case "$_billing" in
+        prepaid|invoice) ACCOUNT_MODE_KIND="api" ;;
+        subscription)    ACCOUNT_MODE_KIND="subscription" ;;
+    esac
+    # stdin's rate_limits only ever accompany a subscription, so they settle the
+    # kind when ~/.claude.json is missing (fresh machine, or a sandboxed HOME).
+    [ -z "$ACCOUNT_MODE_KIND" ] && [ "$IS_SUBSCRIPTION" -eq 1 ] && ACCOUNT_MODE_KIND="subscription"
+
+    if [ -n "$cfg_plan_label" ]; then
+        ACCOUNT_MODE="$cfg_plan_label"
+    elif [ -n "$_seat" ]; then
+        ACCOUNT_MODE=$(seat_tier_label "$_seat")
+    elif [ "$ACCOUNT_MODE_KIND" = "api" ]; then
+        ACCOUNT_MODE="$L_MODE_API"
+    elif [ "$ACCOUNT_MODE_KIND" = "subscription" ]; then
+        ACCOUNT_MODE="$L_MODE_SUB"
+    fi
+}
+resolve_account_mode
+
+mode_badge=""
+if [ "$cfg_show_mode" = "1" ] && [ "$IS_ANTIGRAVITY" -eq 0 ]; then
+    if [ -n "$cfg_plan_label" ] || [ "$IS_PROXY" -eq 0 ]; then
+        mode_badge="$ACCOUNT_MODE"
+    fi
+fi
 
 # Provider badge on the model segment — first-party Anthropic shows nothing;
 # any other backend is named explicitly so the backend mode is visible at a glance.
@@ -1552,7 +1878,9 @@ fi
 
 seg_model=""
 if [ "$cfg_show_model" = "1" ] && [ -n "$model" ]; then
-    seg_model="${C_MODEL}${L_MODEL} ${model}${RESET}"
+    seg_model="${C_MODEL}${L_MODEL}${RESET}"
+    [ -n "$mode_badge" ] && seg_model="${seg_model} ${C_ACCENT}${mode_badge}${RESET}"
+    seg_model="${seg_model} ${C_MODEL}${model}${RESET}"
     _model_params=$(model_params_label "$model")
     [ -n "$_model_params" ] && seg_model="${seg_model} $(muted "(${_model_params})")"
     [ -n "$provider_badge" ] && seg_model="${seg_model} $(muted "[${provider_badge}]")"
@@ -1740,6 +2068,106 @@ if [ "$IS_OPENROUTER" -eq 1 ] && [ "$cfg_show_balance" = "1" ] && [ -n "$OPENROU
     fi
 fi
 
+# ---------------------------------------------------------------------------
+# Prepaid API credit bar — the API-billing counterpart to the subscription bar.
+# Anthropic exposes no credit-balance endpoint (the Console's "Credit balance"
+# card is not in the public API), so the balance is a snapshot the user declares
+# in config.json and everything spent since it is measured separately.
+#
+# Two sources, in order. ANTHROPIC_ADMIN_KEY (a different credential from
+# ANTHROPIC_API_KEY) buys the authoritative figure from the Admin API cost
+# report, covering the whole organization. Failing that — and it always fails on
+# an individual account, which Anthropic issues no Admin key for — spend is
+# estimated from this machine's own Claude Code transcripts and marked "est.",
+# because that view cannot see traffic from the Console, other tools, or other
+# machines. Neither available means the declared balance renders on its own,
+# with no bar: a bar with no spend figure would read 0% and quietly lie.
+#
+# The fetch runs DETACHED, never inline. The report paginates at 31 daily
+# buckets a page and this script re-renders every couple of seconds, so a
+# synchronous multi-page call would stall the prompt for as long as the network
+# takes. Each render prints whatever the last completed fetch left on disk and,
+# when that is past its TTL, spawns one background refresh behind an mkdir lock.
+# ---------------------------------------------------------------------------
+balance_warning_line=""
+if [ -z "$seg_balance" ] && [ "$cfg_show_balance" = "1" ] \
+   && [ "$ACCOUNT_MODE_KIND" != "subscription" ] && [ -n "$cfg_api_credit_balance" ]; then
+    _ac_as_of=$(parse_snapshot_moment "$cfg_api_credit_as_of")
+    if [ -z "$_ac_as_of" ]; then
+        balance_warning_line="${BOLD_RED}${L_BAL_INVALID}${RESET}"
+    else
+        _ac_dir="$CACHE_ROOT/anthropic-cost"
+        mkdir -p "$_ac_dir" 2>/dev/null
+        # Keyed by snapshot date: moving the snapshot must not read back a spend
+        # total that was accumulated from the old one.
+        _ac_file="$_ac_dir/spend-${_ac_as_of}.txt"
+        _ac_stamp="$_ac_dir/spend-${_ac_as_of}.stamp"
+        _ac_lock="$_ac_dir/fetch.lock"
+        _ac_age=$cfg_api_spend_cache_seconds
+        [ -f "$_ac_stamp" ] && _ac_age=$(( $(date +%s) - $(file_mtime "$_ac_stamp") ))
+        # Where the per-session transcripts live, for the local estimate. Derived
+        # from this session's own transcript so a relocated CLAUDE_CONFIG_DIR
+        # still resolves, with the stock location as the fallback.
+        _ac_projects="$HOME/.claude/projects"
+        if [ -n "$transcript_path" ]; then
+            _ac_p=$(dirname "$(dirname "$transcript_path")")
+            [ -d "$_ac_p" ] && _ac_projects="$_ac_p"
+        fi
+        _ac_rates=""
+        for _i in "${!cfg_model_pricing_patterns[@]}"; do
+            _ac_rates+="${cfg_model_pricing_patterns[$_i]}"$'\t'"${cfg_model_pricing_labels[$_i]}"$'\n'
+        done
+        if [ "$_ac_age" -ge "$cfg_api_spend_cache_seconds" ] \
+           && { [ -n "${ANTHROPIC_ADMIN_KEY:-}" ] || command -v python3 >/dev/null 2>&1; }; then
+            # A lock left behind by a killed fetcher would wedge refreshes
+            # forever, so one older than the worst-case curl budget is abandoned.
+            if [ -d "$_ac_lock" ] && [ $(( $(date +%s) - $(file_mtime "$_ac_lock") )) -gt 180 ]; then
+                rmdir "$_ac_lock" 2>/dev/null
+            fi
+            if mkdir "$_ac_lock" 2>/dev/null; then
+                _ac_start_iso=$(format_cost_report_start "$_ac_as_of")
+                (
+                    trap 'rmdir "$_ac_lock" 2>/dev/null' EXIT
+                    _src=""; _val=""
+                    if [ -n "${ANTHROPIC_ADMIN_KEY:-}" ] && command -v curl >/dev/null 2>&1; then
+                        _val=$(anthropic_spend_usd "$_ac_start_iso" "$ANTHROPIC_ADMIN_KEY") && _src="admin"
+                    fi
+                    if [ -z "$_src" ]; then
+                        _val=$(local_spend_usd "$_ac_as_of" "$_ac_projects" "$_ac_rates") && _src="local"
+                    fi
+                    # Staged through .tmp and promoted by mv so a render reading
+                    # mid-write can never see a truncated dollar figure. The
+                    # source travels with the figure so the render knows whether
+                    # it owes the reader an "est." caveat.
+                    if [ -n "$_src" ]; then
+                        printf '%s\t%s' "$_src" "$_val" > "${_ac_file}.tmp"
+                        mv "${_ac_file}.tmp" "$_ac_file" 2>/dev/null
+                    fi
+                    # Stamped either way: a rejected key must back off to the TTL
+                    # too, not respawn a fetcher on every render.
+                    touch "$_ac_stamp" 2>/dev/null
+                ) >/dev/null 2>&1 &
+                disown 2>/dev/null
+            fi
+        fi
+
+        _ac_src=""; _ac_spend=""
+        [ -f "$_ac_file" ] && IFS=$'\t' read -r _ac_src _ac_spend < "$_ac_file"
+        _ac_total=$(printf '%.2f' "$cfg_api_credit_balance")
+        _ac_marker=$(format_day_month_epoch "$_ac_as_of")
+        _ac_caveat=""
+        [ "$_ac_src" = "local" ] && _ac_caveat="${L_BAL_ESTIMATE} · "
+        if is_num "$_ac_spend"; then
+            _ac_left=$(awk "BEGIN{v=$cfg_api_credit_balance-$_ac_spend; printf \"%.2f\", (v<0?0:v)}")
+            _ac_pct=$(awk "BEGIN{ if ($cfg_api_credit_balance>0) { p=($_ac_spend/$cfg_api_credit_balance)*100; printf \"%.0f\", (p>100?100:p) } else print 0 }")
+            _ac_color=$(usage_color "$_ac_pct" "$cfg_5h_warn" "$cfg_5h_crit")
+            seg_balance="${C_LABEL}${L_BALANCE}${RESET} $(render_bar "$_ac_pct" "$_ac_color") ${_ac_color}${_ac_pct}%${RESET} $(muted "\$${_ac_left}/\$${_ac_total}${_ac_marker:+ (${_ac_caveat}${L_BAL_AS_OF} ${_ac_marker})}")"
+        else
+            seg_balance="${C_LABEL}${L_BALANCE}${RESET} $(muted "\$${_ac_total}${_ac_marker:+ (${L_BAL_DECLARED} ${_ac_marker})}")"
+        fi
+    fi
+fi
+
 # Context segment — which value(s) render next to the bar is configurable:
 # percent | tokens | remaining (tokens left before auto-compact) | both.
 seg_context=""
@@ -1917,6 +2345,7 @@ layout_spec="$LAYOUT_EXPANDED"
 out_lines=()
 [ -n "$config_warning_line" ] && out_lines+=("$config_warning_line")
 [ -n "$subscription_warning_line" ] && out_lines+=("$subscription_warning_line")
+[ -n "$balance_warning_line" ] && out_lines+=("$balance_warning_line")
 
 IFS='|' read -ra _layout_line_specs <<< "$layout_spec"
 for _lspec in "${_layout_line_specs[@]}"; do
