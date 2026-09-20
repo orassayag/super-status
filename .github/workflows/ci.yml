@@ -32,3 +32,26 @@ jobs:
 
       - name: bats
         run: bats tests/
+
+  # The README promises Windows through WSL or Git Bash, and until this job
+  # existed nothing ever ran the script there — so a Git Bash path or `stat`
+  # difference could sit broken until a user reported it. Non-blocking on
+  # purpose: a Windows runner is expected to surface real differences, and a
+  # newly-red check on every push is friction, not information. Read what it
+  # reports, fix what is worth fixing, and make it blocking once it is green.
+  windows-git-bash:
+    runs-on: windows-latest
+    continue-on-error: true
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install bats
+        run: |
+          git clone --depth 1 https://github.com/bats-core/bats-core.git "$RUNNER_TEMP/bats"
+
+      - name: bats (Git Bash)
+        run: |
+          "$RUNNER_TEMP/bats/bin/bats" tests/

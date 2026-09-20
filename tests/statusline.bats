@@ -707,33 +707,33 @@ write_oauth_account() { # $1 billingType, $2 seatTier (JSON literal)
     printf '{"oauthAccount":{"billingType":%s,"seatTier":%s}}' "$1" "$2" > "$HOME/.claude.json"
 }
 
-@test "prepaid billing renders an API badge before the model name" {
+@test "prepaid billing renders an API badge ahead of the model segment" {
     write_oauth_account '"prepaid"' 'null'
     run_statusline "$MINIMAL_PAYLOAD"
-    [[ "$(strip_ansi "$output")" == *"◆ API Opus"* ]]
+    [[ "$(strip_ansi "$output")" == *"API | ◆ Opus"* ]]
 }
 
 @test "invoice billing also renders the API badge" {
     write_oauth_account '"invoice"' 'null'
     run_statusline "$MINIMAL_PAYLOAD"
-    [[ "$(strip_ansi "$output")" == *"◆ API Opus"* ]]
+    [[ "$(strip_ansi "$output")" == *"API | ◆ Opus"* ]]
 }
 
 @test "subscription billing renders Sub when no seat tier is published" {
     write_oauth_account '"subscription"' 'null'
     run_statusline "$MINIMAL_PAYLOAD"
-    [[ "$(strip_ansi "$output")" == *"◆ Sub Opus"* ]]
+    [[ "$(strip_ansi "$output")" == *"Sub | ◆ Opus"* ]]
 }
 
 @test "a published seat tier names the plan instead of Sub" {
     write_oauth_account '"subscription"' '"max_20x"'
     run_statusline "$MINIMAL_PAYLOAD"
-    [[ "$(strip_ansi "$output")" == *"◆ Max 20x Opus"* ]]
+    [[ "$(strip_ansi "$output")" == *"Max 20x | ◆ Opus"* ]]
 }
 
 @test "stdin rate_limits imply a subscription when ~/.claude.json is absent" {
     run_statusline "$SUBSCRIPTION_PAYLOAD"
-    [[ "$(strip_ansi "$output")" == *"◆ Sub Opus"* ]]
+    [[ "$(strip_ansi "$output")" == *"Sub | ◆ Opus"* ]]
 }
 
 @test "no account record and no rate_limits leaves the badge off" {
@@ -745,7 +745,7 @@ write_oauth_account() { # $1 billingType, $2 seatTier (JSON literal)
     write_oauth_account '"prepaid"' 'null'
     echo '{"plan_label":"Max"}' > "$HOME/.claude/super-status/config.json"
     run_statusline "$MINIMAL_PAYLOAD"
-    [[ "$(strip_ansi "$output")" == *"◆ Max Opus"* ]]
+    [[ "$(strip_ansi "$output")" == *"Max | ◆ Opus"* ]]
 }
 
 @test "behind a proxy the provider badge speaks and the mode badge stays out" {
@@ -753,14 +753,14 @@ write_oauth_account() { # $1 billingType, $2 seatTier (JSON literal)
     ANTHROPIC_BASE_URL="https://openrouter.ai/api" run_statusline "$MINIMAL_PAYLOAD"
     plain=$(strip_ansi "$output")
     [[ "$plain" == *"◆ Opus"* ]]
-    [[ "$plain" != *"◆ API Opus"* ]]
+    [[ "$plain" != *"API | ◆ Opus"* ]]
     [[ "$plain" == *"[OpenRouter]"* ]]
 }
 
 @test "an explicit plan_label still shows behind a proxy" {
     echo '{"plan_label":"API"}' > "$HOME/.claude/super-status/config.json"
     ANTHROPIC_BASE_URL="https://openrouter.ai/api" run_statusline "$MINIMAL_PAYLOAD"
-    [[ "$(strip_ansi "$output")" == *"◆ API Opus"* ]]
+    [[ "$(strip_ansi "$output")" == *"API | ◆ Opus"* ]]
 }
 
 @test "display.mode off hides the badge" {

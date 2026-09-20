@@ -93,6 +93,29 @@ awk -v row="$row" '
   !done && /^[[:space:]]*\|[-: |]+\|[[:space:]]*$/ { print row; done = 1 }
 ' "$year_file" > "$tmp" && mv "$tmp" "$year_file"
 
+# --- carry the version into the plugin manifest -------------------------------
+# .claude-plugin/plugin.json is Claude Code's update/cache key: it is the one
+# number it reads to decide whether an installed plugin has a newer version.
+# Left to be raised by hand it fell three releases behind, so every
+# `/plugin install super-status` user kept being served the old release with no
+# update prompt. Raised here, inside the same commit as the ledger row and the
+# tag, the three can no longer disagree.
+#
+# A malformed write here is worse than no write — an unparseable manifest can
+# stop the plugin loading for everyone — so it is staged through a temp file
+# and only promoted once jq confirms the result parses.
+PLUGIN_MANIFEST=".claude-plugin/plugin.json"
+if [ -f "$PLUGIN_MANIFEST" ] && command -v jq >/dev/null 2>&1; then
+  if jq --arg v "$next" '.version = $v' "$PLUGIN_MANIFEST" > "$PLUGIN_MANIFEST.tmp" 2>/dev/null \
+     && jq empty "$PLUGIN_MANIFEST.tmp" 2>/dev/null; then
+    mv "$PLUGIN_MANIFEST.tmp" "$PLUGIN_MANIFEST"
+    git add "$PLUGIN_MANIFEST"
+  else
+    rm -f "$PLUGIN_MANIFEST.tmp"
+    echo "⚠️  Could not update $PLUGIN_MANIFEST to v$next — left unchanged" >&2
+  fi
+fi
+
 touch "$LOCK"
 rm -f "$NOTE_FILE"
 git add "$year_file"

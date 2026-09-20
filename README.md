@@ -14,8 +14,10 @@ Supported platforms: **macOS**, **Linux**, and Windows via **WSL** or **Git Bash
 | `jq` | required | stdin/config JSON parsing |
 | `python3` | required | transcript parsing (`Tok`, `Calls`, `Activity:`, `Agents:`, `Todo:`) — ships by default on macOS and most Linux distros |
 | `git` | recommended | branch, dirty/ahead-behind markers |
+| `timeout` | recommended | the time limit on every `git`/`jj` call. GNU coreutils; on macOS it is `gtimeout` from `brew install coreutils`. Without either, git runs unbounded and a stalled repository can freeze the statusline |
 | `tokei` | optional | the `LOC` (lines of code in project) field |
 | `curl` | optional | the OpenRouter `Bal` bar (Mode 3 only) |
+| `jj` | optional | [Jujutsu](https://github.com/jj-vcs/jj) branch state, behind `jj.enabled` (Mode: any) |
 
 ```
 brew install jq
@@ -173,6 +175,8 @@ A malformed config never breaks the render — defaults are used and a one-line 
   "preset": "",
   "language": "en",
   "layout": "expanded",
+  "lines": [],
+  "right_align": [],
   "bar_width": 10,
   "bar_filled": "▮",
   "bar_empty": "▪",
@@ -184,6 +188,12 @@ A malformed config never breaks the render — defaults are used and a one-line 
   "model_params": {},
   "external_usage_path": "",
   "external_usage_max_age": 1800,
+  "external_usage_write_path": "",
+  "prompt_cache_ttl_seconds": 300,
+  "hyperlinks": false,
+  "added_dirs_max": 5,
+  "added_dirs_name_width": 24,
+  "added_dirs_layout": "inline",
   "plan_label": "",
   "api_credit_balance": null,
   "api_credit_as_of": "",
@@ -197,11 +207,17 @@ A malformed config never breaks the render — defaults are used and a one-line 
     "context": true, "cost": true, "total_tokens": true,
     "loc": true, "session_time": true, "thinking_time": true,
     "cache_ratio": true, "efficiency": true, "tool_calls": true,
-    "activity": false, "agents": false, "todos": false, "orchestrator": false
+    "activity": false, "agents": false, "todos": false, "orchestrator": false,
+    "added_dirs": false, "prompt_cache": false, "today": false,
+    "compactions": false, "speed": false
   },
   "git": {
     "push_warning_threshold": 3,
-    "push_critical_threshold": 10
+    "push_critical_threshold": 10,
+    "timeout_seconds": 3
+  },
+  "jj": {
+    "enabled": false
   },
   "colors": {
     "label": "", "model": "", "repo": "", "branch": "",
@@ -220,6 +236,8 @@ A malformed config never breaks the render — defaults are used and a one-line 
 | `preset` | `full` (everything on), `essential` (identity + git + limits + context + todos/agents), or `minimal` (model, branch, context, sessions — compact layout). Applied first; every explicit key below still overrides it |
 | `language` | Label language. Only `en` ships; all labels live in one block in the script, so adding a language is one `case` branch |
 | `layout` | `expanded` (the default multi-line layout) or `compact` (3 lines for small panes — see **Compact layout** below) |
+| `lines` | An array of arrays of segment names that replaces the preset layout entirely — this is how segments are reordered or merged onto shared lines. See **Custom layout** below. Empty = use the `layout` preset |
+| `right_align` | Segment names at which a line's right-aligned run **begins**, e.g. `["context"]`. On whichever line that segment renders, it and everything after it are pushed to the right edge, giving a fixed right-hand column that does not slide when the left-hand text changes length. Stands down to an ordinary left-packed line whenever the terminal width is unknown or there is no room to pad. Empty = every line packs left |
 | `bar_width` | Progress-bar width in glyphs (5–60). The default `10` keeps every bar the same width so stacked bars align in a column |
 | `bar_filled` / `bar_empty` | Bar glyphs. The defaults (`"▮"` / `"▪"`) give a segmented block bar; set e.g. `"█"` / `"░"` for a solid bar, or `"#"` / `"-"` for ASCII-only terminals |
 | `path_levels` | How many trailing path components the repo location shows (1–5). `2` turns `client:main` into `acme/client:main`, disambiguating same-named folders |
@@ -230,13 +248,21 @@ A malformed config never breaks the render — defaults are used and a one-line 
 | `model_params` | Parameter-count badge shown after the model name (`◆ Sonnet 5 (365B)`). A map from a case-insensitive **substring of the displayed model name** to the text to render, e.g. `{"sonnet 5": "365B", "opus 5": "2T"}`. The longest matching pattern wins, so a specific `"sonnet 5"` beats a broader `"sonnet"`. Empty (the default) = no badge — Anthropic publishes no parameter counts, so these numbers are yours to declare, not a built-in table |
 | `external_usage_path` | Path to a local JSON file another tool writes with the same shape as stdin's `rate_limits` (optionally plus a `model_scoped` map of per-model weekly windows). When stdin omits `rate_limits`, a fresh snapshot fills the `5h`/`Nd` bars from session start and renders any per-model windows. Supports a leading `~/`. Empty = disabled |
 | `external_usage_max_age` | Freshness cap in seconds for `external_usage_path` (default `1800`). A snapshot older than this is ignored, so a stale file never resurrects a rolled-over window. `0` = never expire |
-| `plan_label` | Overrides the account-mode badge shown before the model name (`◆ API Opus 5`). Empty (the default) auto-detects — see **Account-mode badge** below. Set it to whatever you want rendered: `"Max 20x"`, `"Pro"`, `"Team"` |
+| `external_usage_write_path` | The producer side of the above. When Claude Code hands the script real `rate_limits` on stdin, they are also written to this file — so `usage-feeder.sh`, whose data source is throttled, usually finds recent data already waiting and has to poll less. Must be an **absolute** path ending in `.json` whose directory exists (a leading `~/` is expanded); written `0600`, staged through a temp file, and **only when the new windows are not older than what the file already holds**, so the bars can only ever move forward. Empty = disabled |
+| `prompt_cache_ttl_seconds` | Fallback cache lifetime, in seconds, for the `⏱ until HH:MM` expiry segment (default `300`, minimum `60`). Only used for transcripts that record no cache tier at all — a transcript that reports a 5-minute or 1-hour cache write always wins over this |
+| `hyperlinks` | `true` makes the file name on the `Activity:` line an OSC 8 terminal hyperlink that opens the file. Off by default: terminals without hyperlink support can print the raw escape sequence as visible junk. The address is built from the absolute path in the transcript, sanitized and percent-escaped before it is emitted — a path that is not absolute renders as plain text instead |
+| `added_dirs_max` | How many `/add-dir` directories render before the rest collapse to `+N more` (1–20, default `5`) |
+| `added_dirs_name_width` | Each added directory's name is cut to this many characters (4–80, default `24`) |
+| `added_dirs_layout` | `inline` (the default) puts them on the identity line beside the project name — `super-status:main +shared-lib`; `line` gives them a row of their own — `Added dirs: shared-lib, other-thing`. Only the `line` form is addressable as an `added_dirs` segment in a custom `lines` layout; the `inline` form attaches to whichever identity segment rendered |
+| `plan_label` | Overrides the account-mode badge, the first segment on the identity line (`API \| ◆ Opus 5`). Empty (the default) auto-detects — see **Account-mode badge** below. Set it to whatever you want rendered: `"Max 20x"`, `"Pro"`, `"Team"` |
 | `api_credit_balance` | Your prepaid credit balance in USD, read off the Console's **Credit balance** card, e.g. `96.49`. Turns on the `Bal` bar in API mode. `null` (the default) = the whole feature is inert — see **Prepaid API credit bar** below |
 | `api_credit_as_of` | When `api_credit_balance` was read, as `dd/MM/yyyy` or `dd/MM/yyyy HH:MM`. Required whenever a balance is declared; an absent or malformed value warns rather than guessing. **Prefer the `HH:MM` form for a balance you just read** — a bare date means midnight, so stamping an afternoon reading as today makes the bar re-subtract everything already spent that day. `/super-status:credits` writes the clock time for you; the bare-date form is for backdating a past top-up, where midnight is the right reading |
 | `api_spend_cache_seconds` | How long a fetched spend total is reused before a refresh is spawned (default `300`, minimum `60`). Anthropic's cost data lands ~5 minutes behind the request, and the endpoint asks for at most one poll a minute, so going below a few minutes buys nothing |
 | `model_pricing` | Per-MTok list-rate overrides for the **local** spend estimate, as `{"<model-id substring>": "<input>/<output>"}` — e.g. `{"opus-5": "5/25"}`. Longest matching pattern wins, same rule as `model_params`. Empty (the default) uses the estimator's built-in table; override when Anthropic's rates move or you're on negotiated pricing. Has no effect on the Admin API figure, which is already in dollars |
 | `display.*` | Per-field show/hide. Field names match the segment names under **Custom layout** below (plus `git_dirty` / `git_ahead_behind` / `git_file_stats` / `provider` / `effort` / `mode`, which are sub-toggles of `branch`/`model`) |
 | `git.push_warning_threshold` / `push_critical_threshold` | Unpushed-commit counts at which the `↑N` marker turns orange / red |
+| `git.timeout_seconds` | Seconds any single `git` (or `jj`) call may take before it is abandoned (1–60, default `3`). A statusline re-runs every couple of seconds, so a git call blocked on a stalled network mount does not just delay one render — it queues stuck processes behind every following one. A timed-out call degrades to the same "no repository here" the script already handles. Requires `timeout` (Linux) or `gtimeout` (`brew install coreutils`); with neither present git runs unbounded, exactly as before |
+| `jj.enabled` | `true` opts into [Jujutsu](https://github.com/jj-vcs/jj). One version control system per repository, never both: jj takes over only when this flag is set **and** a real `.jj` control directory exists at or above the working directory, so a stray `.jj` inside an ordinary git repository cannot cost that repository its branch name. Shows the bookmark (or the short change id), a `*` dirty marker, and a red `⚠` for an unresolved conflict. Every jj call uses `--ignore-working-copy`, so the statusline never snapshots — it is strictly read-only |
 | `colors.*` | Per-element color overrides: named ANSI (`red`, `cyan`, `grey`, `bright-blue`, `orange`, ...), 256-color numbers (`"208"`), or hex (`"#ff8800"`). Empty = built-in default |
 | `thresholds.*` | Percentages at which the context / 5-hour / weekly bars turn orange (warning) and red (critical) |
 
@@ -270,7 +296,24 @@ Any line that ends up with nothing to show (e.g. the `Sub`/`5h`/`Bal` bars all e
 }
 ```
 
-Segment names: `model`, `repo`, `branch`, `worktree`, `lines_changed`, `version`, `subscription`, `sessions`, `balance`, `context`, `cost`, `total_tokens`, `loc`, `session_time`, `thinking_time`, `cache_ratio`, `efficiency`, `tool_calls`, `activity`, `agents`, `todos`, `orchestrator`. Empty segments are dropped along with their separator, and fully empty lines are omitted — so listing `sessions` and `balance` on the same line is safe (only one ever renders).
+Segment names: `mode`, `model`, `agent` (Antigravity CLI only — the active agent's name and subagent count), `repo`, `branch`, `worktree`, `added_dirs`, `lines_changed`, `version`, `subscription`, `sessions`, `balance`, `context`, `cache_ratio`, `prompt_cache`, `cost`, `today`, `total_tokens`, `loc`, `session_time`, `thinking_time`, `speed`, `efficiency`, `tool_calls`, `compactions`, `activity`, `agents`, `todos`, `orchestrator`. Empty segments are dropped along with their separator, and fully empty lines are omitted — so listing `sessions` and `balance` on the same line is safe (only one ever renders).
+
+### Right-aligned run
+
+`right_align` names the segment at which a line's right-hand run starts. Everything from that segment onward is pushed to the right edge, so the right-hand column stays put as the branch name changes length:
+
+```json
+{
+  "lines": [["model", "repo", "context", "cost"]],
+  "right_align": ["context"]
+}
+```
+
+```
+◆ Claude Sonnet 4.6 | super-status:main        Ctx ▮▮▮▮▪▪▪▪▪▪ 42% | Cost est. $1.23
+```
+
+It stands down — falling back to the ordinary left-packed line — whenever the terminal width is unknown (`$COLUMNS` not exported and no `max_width` set) or the two runs together already fill the line. A wrapped statusline costs a whole row, which is strictly worse than an unaligned one.
 
 ### Kill switch
 
@@ -296,7 +339,8 @@ To make the time fields update continuously instead of only on those events, add
 
 | Field              | Example             | Meaning                                                                |
 | ------------------ | -------------------- | ----------------------------------------------------------------------- |
-| `◆ <mode> <model>` | `◆ API Claude Sonnet 4.6` | The model powering the current session, in the accent color, preceded by the account-mode badge — `API` on prepaid/invoice credit billing, or your subscription tier (`Pro`, `Max 20x`, or plain `Sub`). See **Account-mode badge** below; `plan_label` overrides it and `display.mode` turns it off. A `model_params` entry adds its parameter count after the name (`◆ Sonnet 5 (365B)`). On a non-Anthropic backend a provider badge is appended (`[OpenRouter]`, `[z.ai]`, `[Bedrock]`, `[Vertex]`, or the backend's hostname). Bedrock/Vertex are detected from `CLAUDE_CODE_USE_BEDROCK`/`CLAUDE_CODE_USE_VERTEX` (or a matching base URL). When Claude Code reports a reasoning-effort level (`low`/`medium`/`high`/`xhigh`/`max`), it's appended last as `[High]`; models that don't support the effort parameter show no badge. With `model_source` set, the name can be recovered from the transcript when a proxy rewrites it |
+| `<mode>` | `API` | How the account is billed, as the identity line's own leading segment — `API` on prepaid/invoice credit billing, or your subscription tier (`Pro`, `Max 20x`, or plain `Sub`). See **Account-mode badge** below; `plan_label` overrides it and `display.mode` turns it off. Addressable as the `mode` segment in a custom `lines` layout |
+| `◆ <model>` | `◆ Claude Sonnet 4.6` | The model powering the current session, in the accent color. A `model_params` entry adds its parameter count after the name (`◆ Sonnet 5 (365B)`). On a non-Anthropic backend a provider badge is appended (`[OpenRouter]`, `[z.ai]`, `[Bedrock]`, `[Vertex]`, or the backend's hostname). Bedrock/Vertex are detected from `CLAUDE_CODE_USE_BEDROCK`/`CLAUDE_CODE_USE_VERTEX` (or a matching base URL). When Claude Code reports a reasoning-effort level (`low`/`medium`/`high`/`xhigh`/`max`), it's appended last as `[High]`; models that don't support the effort parameter show no badge. With `model_source` set, the name can be recovered from the transcript when a proxy rewrites it |
 | `repo:branch/worktree` | `repo:master* ↑2 ↓1 !3 +1 ?2` | Current project folder, git branch (resolved from your working directory's git root), and — only inside a git worktree — the worktree name after a `/`. `path_levels` shows more of the repo path. With the git toggles enabled: `*` = dirty working tree; `↑N`/`↓N` = commits ahead/behind upstream (`↑` colored by the push thresholds); `!N +N ?N` = modified / staged / untracked file counts (only non-zero ones shown). Refreshed at most every 10s |
 | `+N -M`            | `+45 -12`             | Lines added/removed this session, taken directly from Claude Code's own `cost.total_lines_added`/`total_lines_removed` counters — updates immediately on every render, no caching. Only counts edits made by this session's own tools (not sub-agents running in their own sessions, and not nested-repo work outside the current one). Hidden if both are zero |
 | `vX.Y.Z`           | `v2.1.90`             | Claude Code CLI version (muted — informational)                        |
@@ -318,7 +362,9 @@ Colors: green = healthy, orange = getting close, red = at/near the limit (the we
 | ---------- | ---------------------------------------- | -------------------------------------------------------------------------------------------------- |
 | `Ctx` | `▮▮▪▪▪▪▪▪▪▪ 14% 28k/200k` | How full the context window is, with a usage-colored bar. Which value(s) render next to the bar is configurable via `context_value` — `percent`, `tokens`, `remaining` (`154k left` — often the most actionable number late in a session), or `both` |
 | `Cache` | `71%` | How much of your current context came from cache reuse vs. fresh tokens. Higher = cheaper/more efficient session. Muted — informational, not actionable |
+| `⏱ until` | `⏱ until 14:30` | When this session's prompt cache expires, as a **clock time** — or `⏱ expired` once past. Deliberately not a countdown: the statusline only repaints while Claude Code is active, so between turns (exactly when the cache is draining) a countdown freezes and keeps reporting a number that has stopped being true, while a clock time stays correct however stale the render is. The tier is read from the transcript's own cache write (5-minute vs. 1-hour); sub-agent responses are ignored, because they run against their own cache and never refresh this session's. Off by default (`display.prompt_cache`) |
 | `Cost` / `Cost est.` | `$0.14`                    | Session cost in USD, always computed at standard API list rates. On API-key/OpenRouter mode this is real spend, labeled `Cost`. On subscription mode you pay a flat monthly fee regardless, so the same number is only an API-equivalent estimate of what the session *would* have cost — labeled `Cost est.` to make that explicit |
+| `Today` | `$12.34` | Total spend across **every** session today, not just this one — the figure you actually budget against. `Cost` resets on every `/clear`, so three clears into a working day it reads low while the day's real total is several times that. Kept in a small per-day ledger under the cache root, one row per session, recording each session's cost the first time that day sees it — so enabling it mid-session counts only what you spend from then on, and a session crossing midnight is split across the two days. Rows unseen for more than a day are pruned on every write. Off by default (`display.today`) |
 | `Tok`  | `152.3k/45.2k`            | Cumulative input/output tokens for the **whole session** (`in/out`) — unlike the `Ctx` figure, this doesn't reset after `/compact`. Both figures are computed by super-status itself, by summing every assistant message's usage fields out of the session transcript (input + cache-creation + cache-read tokens for `in`, output tokens for `out`), rather than trusted straight from Claude Code's own JSON — its `total_input_tokens` is unreliable early in a session and `total_output_tokens` only reflects the *last* exchange rather than a running total. Cached per `session_id`, re-parsed only when the transcript file's mtime changes. Empty until after your first message exchange (see **Live updates**) |
 
 ### Line 4 — Diagnostics (all muted gray)
@@ -329,6 +375,8 @@ Colors: green = healthy, orange = getting close, red = at/near the limit (the we
 | `Session` | `1h30m` | Total session wall-clock time                                              |
 | `Thinking` | `1m38s` | Cumulative time spent waiting on model responses this session              |
 | `Eff` | `A(100)` | Efficiency grade (A–F), based on how much code changed per *edit-capable* tool call (`Edit`, `Write`, etc. — read-only tools like `Read`/`Grep` don't count against it). Higher = more productive tool usage. The grade keeps its A/B green, C orange, D/F red coloring — it's the one non-gray value on this line. Omitted entirely until the session has made at least one edit-capable call, rather than showing a misleading `F(0)` during exploration |
+| `out:` | `out: 42.1 tok/s` | Output rate of the last response. A cumulative token total still climbs at any speed, so a response generating at a third of its usual rate looks identical to a fast one — a degraded endpoint or a throttled account shows up here and nowhere else. Derived from the last response's output tokens and the transcript's own timestamps; nothing renders when that interval is not trustworthy (the first response of a session, or after a long idle gap). Off by default (`display.speed`) |
+| `Compactions:` | `Compactions: 3` | How many times the context has been emptied this session. `Ctx 40%` reads comfortable either way, but at 40% *after three compactions* the conversation has lost most of its history and is heading for a fourth — the moment to start fresh rather than push on. Hidden until the first compaction, like `Calls` and `Eff`. Off by default (`display.compactions`) |
 | `Calls` | `9 (Bash 1, Read 3, Code 3, Skill 1, Other 1)` | Every tool call this session, parsed from the transcript and grouped into six semantic buckets (mapping below). `9` is the session's total tool-call count, and the buckets always sum to exactly that total — zero buckets are simply not spelled out |
 
 > **Note:** `Cache` and `Eff` are *custom heuristics* built for this project, not official Claude Code metrics. They're a useful relative signal, not an absolute judgment of session quality.
@@ -350,6 +398,7 @@ The `Calls` clause is hidden entirely if no transcript is available yet, or befo
 
 | Field | Example | Meaning |
 |---|---|---|
+| `Added dirs:` | `Added dirs: shared-lib, other-thing` | Extra working directories added with `/add-dir`, which Claude Code already hands the script on stdin. Without it, `/add-dir ../shared-lib` leaves line 1 reading exactly as before — nothing signals that the session can now edit a second project. At most `added_dirs_max` render, the rest collapse to `+N more`, and each name is cut to `added_dirs_name_width`. The default `inline` layout puts them on the identity line (`super-status:main +shared-lib`) instead of their own row. Off by default (`display.added_dirs`) |
 | `Activity:` | `◐ Edit: auth.ts \| ✓ Read ×3 \| ✓ Grep ×2` | Live tool activity, newest first: `◐` marks a tool call still in flight (its result hasn't landed in the transcript yet), `✓` marks completed calls — consecutive calls of the same tool collapse into one `×N` group, single calls show their target (file basename, command name, or search pattern). Hidden before the first tool call |
 | `Agents:` | `◐ Explore [haiku]: Finding auth code (2m15s)` | Every subagent currently in flight (a `Task`/`Agent` tool call with no result yet): its type, model (when specified), task description, and elapsed time since launch. One segment per agent; the whole line hides when no agent is running |
 | `Todo:` | `▸ Fixing authentication bug (2/5)` | The current in-progress item from the session's latest todo list, plus completed/total counts. Falls back to the next pending item when nothing is in progress; hides when no todos exist |
@@ -414,8 +463,8 @@ Detected when `rate_limits` is absent. There is still no rolling-window data to 
 The identity line leads with how the account is billed, so a session run on API credits never looks like a session run on a subscription:
 
 ```
-◆ API Opus 5 (3200B) | super-status:main | v2.1.267
-◆ Max 20x Opus 5 (3200B) | super-status:main | v2.1.267
+API | ◆ Opus 5 (3200B) | super-status:main | v2.1.267
+Max 20x | ◆ Opus 5 (3200B) | super-status:main | v2.1.267
 ```
 
 Detection reads `~/.claude.json`'s `oauthAccount` — `billingType` (`prepaid`/`invoice` → `API`, `subscription` → a subscription) and `seatTier`, which names the tier when Anthropic publishes it. **`seatTier` is `null` on most accounts**, so a subscription with no published tier renders the neutral `Sub` rather than guessing between Pro and Max. To name yours, declare it once:
@@ -506,7 +555,7 @@ General reliability note: Claude Code is built and tested against Anthropic's fi
 
 ## Caches
 
-Everything super-status derives (LOC counts, transcript parses, git status, the OpenRouter credits response, the Anthropic cost-report spend total) is cached under `${XDG_CACHE_HOME:-$HOME/.cache}/super-status/`, created with `0700` permissions — private to your user, unlike the world-readable `/tmp` location used before v2.0.0. It's always safe to delete the whole directory; everything in it is re-derived on the next render. `doctor.sh` removes a legacy `/tmp/super-status` directory if it finds one.
+Everything super-status derives (LOC counts, transcript parses, git and jj status, the OpenRouter credits response, the Anthropic cost-report spend total, and the per-day ledger behind `Today`) is cached under `${XDG_CACHE_HOME:-$HOME/.cache}/super-status/`, created with `0700` permissions — private to your user, unlike the world-readable `/tmp` location used before v2.0.0. It's always safe to delete the whole directory; everything in it is re-derived on the next render — with one caveat worth knowing: deleting `daily-cost/` resets `Today` to zero for the rest of the day, because each session's baseline is re-recorded at its current cost. The day ledger prunes itself, dropping session rows unseen for more than a day on every write and sweeping day files older than two days on the first render of a new day. `doctor.sh` removes a legacy `/tmp/super-status` directory if it finds one.
 
 ## Troubleshooting
 
@@ -517,6 +566,14 @@ bash ~/.claude/super-status/doctor.sh
 ```
 
 This checks whether `~/.claude/settings.json` still points at the right script and re-patches it if not (it also verifies the executable bit, your config.json, and cache permissions).
+
+**A field is empty and I want to know *why*** — `doctor.sh` answers "is the install correct", which is a different question. For a single render, set `SUPER_STATUS_DEBUG=1`:
+
+```
+SUPER_STATUS_DEBUG=1 bash ~/.claude/super-status/statusline.sh < payload.json 2>debug.log
+```
+
+It traces where each value came from — whether the rate-limit windows came from stdin, the cross-session cache, or nowhere; whether the transcript pass re-ran or reused its cache; what git resolved and whether a time limit was in force — and names every segment that came out empty. Everything goes to standard **error**, never standard output, so it cannot corrupt the statusline it is explaining. Unset, the script writes nothing to standard error at all.
 
 **A field (or a whole line) shows nothing** — that's by design. Every field is hidden — label, value, and separator together — rather than showing `null`/blank placeholders when its data isn't available (e.g. `tokei` not installed, no git repo, no rate-limit data on a non-Anthropic backend, no transcript yet for `Calls`). If every field on a line is missing, the whole line is omitted rather than printing an empty line. The one exception is `Eff`, which is also deliberately hidden while the session hasn't made any edit-capable tool call yet — a grade of `F(0)` during pure exploration would be misleading, not informative. Also check your config: a `display.*` toggle or preset may simply have it off.
 
@@ -555,7 +612,20 @@ bats tests/          # test suite (bats-core)
 shellcheck statusline.sh doctor.sh install.sh
 ```
 
-Both run in CI on macOS and Ubuntu (the script carries BSD/GNU dual paths for `date` and `stat`, so both platforms matter). See `CHANGELOG.md` for release history and `docs/upgrade-plan.md` for the design notes behind the 2.0 feature set.
+Both run in CI on macOS and Ubuntu (the script carries BSD/GNU dual paths for `date` and `stat`, so both platforms matter), plus a **non-blocking** `windows-latest` job that runs the suite under Git Bash — the README promises that platform, so something has to exercise it. It is non-blocking on purpose: a Windows runner is expected to surface real differences, and a permanently red required check is friction rather than information.
+
+`tests/readme-options.bats` fails when the config keys `statusline.sh` reads and the keys this README's reference block documents disagree in **either** direction, so a key cannot ship undocumented and a row cannot outlive its key. When it fails, the fix is usually a README row.
+
+Release history lives in [`versions/`](versions/), written by the commit hook — see [RELEASING.md](RELEASING.md). `CHANGELOG.md` is closed at 2.5.0 and points there. `docs/upgrade-plan.md` carries the design notes behind the 2.0 feature set.
+
+| Also | |
+|---|---|
+| [CONTRIBUTING.md](CONTRIBUTING.md) | how to propose a change |
+| [SUPPORT.md](SUPPORT.md) | what is supported, and the best-effort policy |
+| [RELEASING.md](RELEASING.md) | every file a release touches |
+| [SECURITY.md](SECURITY.md) | reporting a vulnerability |
+| [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) / [MAINTAINERS.md](MAINTAINERS.md) | the short versions |
+| [AGENTS.md](AGENTS.md) | one ordered install path, written for an agent asked to install this for someone |
 
 ## Thanks
 

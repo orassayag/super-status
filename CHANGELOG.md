@@ -1,8 +1,26 @@
 # Changelog
 
-## 2.5.0 — 22/08/2026
+**The version history lives in [`versions/`](versions/), not here.**
 
-### Fixed
+Every commit is auto-versioned by `.git/hooks/post-commit` →
+`scripts/version-bump.sh`, which appends a plain-English row to the per-year
+ledger `versions/<year>.md` and tags the commit `vX.Y.Z`. That ledger is
+written by the hook on every commit, so it cannot fall behind; this file was
+hand-written, and did fall three releases behind before anything noticed.
+
+Releases from **2.6.0 onward** are recorded there and published to the
+[Releases page](https://github.com/orassayag/super-status/releases) by
+`.github/workflows/release.yml`, which reads its notes out of that same ledger
+row and fails rather than publishing an empty release.
+
+Everything below is the hand-written history up to 2.5.0, kept because it is
+the only record of those releases. It is closed — nothing new is added to it.
+
+## Archive — 2.5.0 and earlier
+
+### 2.5.0 — 22/08/2026
+
+#### Fixed
 - **The `Sessions` 5h/`Nd` usage bars now survive `/clear` and a fresh
   session start.** Claude Code only populates `rate_limits` in its stdin JSON
   after the session has made a real API call, so right after `/clear` (or before
@@ -13,9 +31,9 @@
   future, so a window that has since rolled over is never resurrected as a stale
   percentage.
 
-## 2.4.1 — 14/08/2026
+### 2.4.1 — 14/08/2026
 
-### Fixed
+#### Fixed
 - **The `Sub` bar no longer rolls into a new cycle at the renewal boundary.**
   It previously advanced through calendar months until it found the cycle
   containing "now", so the moment a paid month elapsed it snapped back to `0%`
@@ -25,9 +43,9 @@
   there until `/super-status:subscribe` bumps the date. A full red bar now
   signals "renewal due" instead of a misleading fresh `0%`.
 
-## 2.4.0 — 07/08/2026
+### 2.4.0 — 07/08/2026
 
-### Fixed
+#### Fixed
 - **The `5h` reset marker now always shows a clock time `(HH:MM)`**, even when
   the reset lands after midnight. The 5-hour window is always under five hours
   away, so a `(dd/MM)` date there was misleading — it read as days away rather
@@ -35,15 +53,15 @@
   barely four hours away). The weekly and subscription markers are unchanged:
   they still show `(HH:MM)` for today and `(dd/MM)` for a later day.
 
-### Added
+#### Added
 - **`/super-status:subscribe`** — renewal command that resets
   `subscription_start_date` to today (or a `dd/MM/yyyy` argument) so the `Sub`
   cycle restarts from the renewal day, rewriting the first `CLAUDE.md` that
   declares the key (project-local first, then global) instead of hand-editing.
 
-## 2.3.0 — 25/07/2026
+### 2.3.0 — 25/07/2026
 
-### Changed
+#### Changed
 - **Every reset now shows an absolute "when" marker in parens**, not just the
   weekly window. `Sub`, `5h`, and the weekly reset each append a marker after
   their countdown: a clock time `(HH:MM)` when the reset lands on today's date,
@@ -54,9 +72,9 @@
   and answers "when, exactly?" at a glance regardless of how far out the reset
   is.
 
-## 2.2.1 — 18/07/2026
+### 2.2.1 — 18/07/2026
 
-### Fixed
+#### Fixed
 - **`doctor.sh` now repairs a missing `refreshInterval`** instead of exiting
   "Nothing to do" whenever the `statusLine.command` already pointed at
   super-status. Without `refreshInterval`, the script only re-runs on
@@ -67,9 +85,9 @@
   settings) were stuck in that state with no repair path; `doctor.sh` now
   detects the correct-command/missing-interval case and adds the default.
 
-## 2.2.0 — 18/07/2026
+### 2.2.0 — 18/07/2026
 
-### Changed
+#### Changed
 - **UI redesign** (see `docs/plan-redesign.md`) — the default output is now a compact,
   visually hierarchical 4-line layout instead of the previous 6–8 equal-weight labeled
   lines. All data is preserved; low-priority fields are visually deprioritized (muted,
@@ -104,9 +122,9 @@
 - **`Session`/`Thinking` de-duplicated** — session time appears once, on the
   diagnostics line.
 
-## 2.1.0 — 17/07/2026
+### 2.1.0 — 17/07/2026
 
-### Added
+#### Added
 - **`Orca:` / `Master:` line** — live run state for the
   [`/orca` and `/master`](https://github.com/orassayag/agentic-project-workflow) parallel/sequential
   execution workflows, read directly off the on-disk files those tools already treat as their own
@@ -120,9 +138,9 @@
   `COMMITTED`. Off by default; enabled via `"preset": "full"`/`"essential"` or
   `"display": {"orchestrator": true}`.
 
-## 2.0.1 — 17/07/2026
+### 2.0.1 — 17/07/2026
 
-### Fixed
+#### Fixed
 - **`Lines Changes:` reverted to Claude Code's own `cost.total_lines_added`/
   `total_lines_removed` counters**, dropping the workspace-wide git-diff/baseline
   cache introduced alongside it (predates 2.0.0, but the two shipped close
@@ -132,12 +150,12 @@
   reflected — but the figure now always matches what Claude Code itself
   reports, updates every render, and has no caching layer to go stale.
 
-## 2.0.0 — 17/07/2026
+### 2.0.0 — 17/07/2026
 
 Large upgrade adopting ideas from [claude-hud](https://github.com/jarrodwatts/claude-hud)
 (see `docs/upgrade-plan.md` for the full issue-by-issue plan, I1–I19).
 
-### Added
+#### Added
 - **Config file** `~/.claude/super-status/config.json` — per-field show/hide
   toggles, presets (`full` / `essential` / `minimal`), bar width and glyphs,
   per-element color overrides (named / 256 / hex), color thresholds, and
@@ -173,7 +191,7 @@ Large upgrade adopting ideas from [claude-hud](https://github.com/jarrodwatts/cl
 - LICENSE (MIT), this CHANGELOG, SECURITY.md, and a README Requirements
   section covering supported platforms. (I16, I19)
 
-### Changed
+#### Changed
 - **Caches moved out of world-readable `/tmp`** to
   `${XDG_CACHE_HOME:-$HOME/.cache}/super-status/` with `0700` permissions; the
   OpenRouter cache no longer derives its filename from the API key.
@@ -184,7 +202,7 @@ Large upgrade adopting ideas from [claude-hud](https://github.com/jarrodwatts/cl
 - `doctor.sh` now also checks the executable bit, config validity, cache
   permissions, and preserves `refreshInterval` when re-patching settings.
 
-## 1.x (pre-changelog history)
+### 1.x (pre-changelog history)
 
 - Structural refactor from a dense, symbol-heavy 3-line layout to the labeled
   multi-line format.

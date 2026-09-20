@@ -1,0 +1,58 @@
+name: Release
+
+# scripts/version-bump.sh already creates and pushes the vX.Y.Z tag on every
+# commit, so this needs no change to the release habit at all — it fires on the
+# tag that is already being pushed. Before it existed, a tag was all that
+# happened: the Releases page stayed empty, so GitHub's release notifications
+# and "Latest release" badge never fired and an interested user had to read the
+# commit log to learn that anything had shipped.
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Extract the ledger row for this version
+        id: notes
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          # The ledger is per calendar year and the tag does not name the year,
+          # so the row is looked up across every ledger file rather than
+          # guessed from the version number.
+          row="$(awk -F'|' -v v="$version" '
+                   NF >= 5 { gsub(/^[ \t]+|[ \t]+$/, "", $2); if ($2 == v) { print; exit } }
+                 ' versions/*.md || true)"
+          if [ -z "$row" ]; then
+            echo "::error::No ledger row for ${version} in versions/*.md — refusing to publish an empty release." >&2
+            exit 1
+          fi
+          # | version | time | `sha` | • one<br>• two |  ->  the Change cell,
+          # with each <br>-joined bullet back on its own line.
+          change="$(printf '%s' "$row" | awk -F'|' '{ print $5 }')"
+          change="$(printf '%s' "$change" | sed -e 's/<br>/\n/g' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+          if [ -z "$(printf '%s' "$change" | tr -d '[:space:]')" ]; then
+            echo "::error::The ledger row for ${version} has an empty Change cell — refusing to publish an empty release." >&2
+            exit 1
+          fi
+          {
+            echo 'body<<RELEASE_NOTES_EOF'
+            printf '%s\n' "$change"
+            echo 'RELEASE_NOTES_EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Publish
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          body: ${{ steps.notes.outputs.body }}

@@ -72,10 +72,11 @@ cfg_model_params_labels=()
 # list pricing at the time of writing and will drift as rates change.
 cfg_model_pricing_patterns=()
 cfg_model_pricing_labels=()
-# Account-mode badge ("◆ API Opus 5"). Auto-detection reads ~/.claude.json's
-# oauthAccount.{billingType,seatTier}: billingType separates API billing from a
-# subscription, but seatTier — the only thing that names Pro vs. Max — is null
-# on most accounts, so plan_label is the override that makes the tier visible.
+# Account-mode badge — the identity line's leading segment ("API | ◆ Opus 5").
+# Auto-detection reads ~/.claude.json's oauthAccount.{billingType,seatTier}:
+# billingType separates API billing from a subscription, but seatTier — the only
+# thing that names Pro vs. Max — is null on most accounts, so plan_label is the
+# override that makes the tier visible.
 cfg_plan_label=""
 # Prepaid API credit bar. Anthropic publishes no credit-balance endpoint (the
 # Console's "Credit balance" card is not in the public API), so the balance is a
@@ -84,6 +85,32 @@ cfg_plan_label=""
 cfg_api_credit_balance=""
 cfg_api_credit_as_of=""
 cfg_api_spend_cache_seconds=300
+# Seconds any single git (or jj) call may take before it is abandoned and the
+# segment degrades to "no repository here". Generous for local git, still well
+# inside a two-second refresh.
+cfg_git_timeout=3
+# Jujutsu. Off by default, and even when on it only takes over for a repository
+# that actually holds a .jj control directory — one system per repository,
+# never both on the line at once.
+cfg_jj_enabled=0
+# Extra working directories from /add-dir. added_dirs_layout is "inline"
+# (`super-status:main +shared-lib`) or "line" (a separate `Added dirs:` row).
+cfg_added_dirs_max=5
+cfg_added_dirs_name_width=24
+cfg_added_dirs_layout="inline"
+# Prompt-cache expiry. The tier is read from the transcript (a 5-minute vs.
+# 1-hour cache write); this is only the fallback for transcripts that record
+# neither, and never overrides one that does.
+cfg_prompt_cache_ttl_seconds=300
+# Opt-in producer side of external_usage_path: the authoritative rate-limit
+# windows that arrive free on stdin, written out for another tool to read.
+cfg_external_usage_write_path=""
+# OSC 8 hyperlinks on the activity line's file names.
+cfg_hyperlinks=0
+# Segment name at which a line's right-aligned run begins, as "line_index:name"
+# pairs are not needed — a bare segment name is matched on whichever line it
+# renders. Empty = every line packs left, as before.
+cfg_right_align=""
 
 cfg_show_model=1
 cfg_show_mode=1
@@ -113,6 +140,11 @@ cfg_show_activity=0
 cfg_show_agents=0
 cfg_show_todos=0
 cfg_show_orchestrator=0
+cfg_show_added_dirs=0
+cfg_show_prompt_cache=0
+cfg_show_today=0
+cfg_show_compactions=0
+cfg_show_speed=0
 
 cfg_push_warning=3
 cfg_push_critical=10
@@ -136,13 +168,25 @@ cfg_color_bar_empty=""
 # Layout presets: lines separated by "|", segments within a line by ",".
 # A custom "lines" array in config.json overrides either preset, which is how
 # element reordering and merging elements onto shared lines is expressed.
-LAYOUT_EXPANDED="model,agent,repo,branch,worktree,lines_changed,version|subscription,sessions,balance|context,cache_ratio,cost,total_tokens|loc,session_time,thinking_time,efficiency,tool_calls|activity|agents|todos|orchestrator"
-LAYOUT_COMPACT="model,agent,repo,branch,worktree,context|subscription,sessions,balance,cost|activity,agents,todos,orchestrator"
+LAYOUT_EXPANDED="mode,model,agent,repo,branch,worktree,lines_changed,version|added_dirs|subscription,sessions,balance|context,cache_ratio,prompt_cache,cost,today,total_tokens|loc,session_time,thinking_time,speed,efficiency,tool_calls,compactions|activity|agents|todos|orchestrator"
+LAYOUT_COMPACT="mode,model,agent,repo,branch,worktree,added_dirs,context|subscription,sessions,balance,cost,today|activity,agents,todos,orchestrator"
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 is_num() { [[ "$1" =~ ^-?[0-9]+([.][0-9]+)?$ ]]; }
+
+# SUPER_STATUS_DEBUG=1 traces where each value came from and why a segment came
+# out empty. Standard ERROR, never standard output: the statusline IS standard
+# output, so a trace written there would corrupt the display it is explaining.
+# This answers "why is this render empty"; doctor.sh answers "is the install
+# correct" — the two do not overlap.
+debug_log() {
+    if [ "${SUPER_STATUS_DEBUG:-0}" = "1" ]; then
+        printf 'super-status: %s\n' "$*" >&2
+    fi
+    return 0
+}
 
 to_bool() {
     case "$1" in
@@ -566,6 +610,66 @@ trim_ws() {
     printf '%s' "$s"
 }
 
+# Bidi overrides and the invisible direction marks, written as literal UTF-8
+# byte sequences rather than \u escapes: macOS ships bash 3.2, which has no \u.
+SANITIZE_BIDI=(
+    $'\xe2\x80\x8e' $'\xe2\x80\x8f'
+    $'\xe2\x80\xaa' $'\xe2\x80\xab' $'\xe2\x80\xac' $'\xe2\x80\xad' $'\xe2\x80\xae'
+    $'\xe2\x81\xa6' $'\xe2\x81\xa7' $'\xe2\x81\xa8' $'\xe2\x81\xa9'
+)
+# CSI ("ESC [ ... final"), OSC ("ESC ] ... BEL/ST"), then any other
+# ESC-introduced two-character sequence. No branch can match the empty string,
+# so the removal loop in sanitize_text always terminates.
+SANITIZE_ESC_RE=$'\033\\[[0-9;?]*[ -/]*[@-~]|\033\\][^\a\033]*(\a|\033\\\\)?|\033[@-_]?'
+
+# Every string this script did not author itself — a file name or tool argument
+# out of the transcript, a path on disk, a model name, a label from an external
+# snapshot — reaches a terminal that obeys escape sequences, so all of it is
+# routed through here first. Whole escape sequences go before the remaining
+# control characters, so truncation can never leave half a sequence behind, and
+# the visible width the max_width pass counts is the width actually printed.
+# Pure bash on purpose: this runs on a dozen values every render.
+sanitize_text() {
+    local _s="$1" _m
+    while [[ "$_s" =~ $SANITIZE_ESC_RE ]]; do
+        _m="${BASH_REMATCH[0]}"
+        _s="${_s/"$_m"/}"
+    done
+    for _m in "${SANITIZE_BIDI[@]}"; do
+        _s="${_s//"$_m"/}"
+    done
+    trim_ws "${_s//[[:cntrl:]]/ }"
+}
+
+# OSC 8 terminal hyperlink around $2, addressed by $1. The address is built
+# here from a path this script resolved, never passed through from outside, and
+# is percent-escaped and re-sanitized anyway: a hyperlink embeds its address in
+# an escape sequence, which is precisely the output class sanitize_text exists
+# to close. Anything that fails validation renders as plain text.
+safe_hyperlink() {
+    # LC_ALL=C so the loop walks bytes, not characters: a percent-escape is
+    # defined per byte, and a multi-byte path encoded per character is wrong.
+    local LC_ALL=C
+    local _path="$1" _label="$2" _enc="" _hex="" _c _i
+    [ -n "$_label" ] || return 1
+    _path=$(sanitize_text "$_path")
+    case "$_path" in
+        /*) ;;
+        *) return 1 ;;
+    esac
+    for (( _i = 0; _i < ${#_path}; _i++ )); do
+        _c="${_path:_i:1}"
+        case "$_c" in
+            [A-Za-z0-9/._~-]) _enc+="$_c" ;;
+            # A byte at or above 0x80 comes back sign-extended from printf's
+            # "'c" form (FFFFFFFFFFFFFFC3, not C3), so only the low byte is kept.
+            *) printf -v _hex '%02X' "'$_c"; _enc+="%${_hex: -2}" ;;
+        esac
+    done
+    # shellcheck disable=SC1003  # \\ is the ST terminator's backslash, not a quote escape
+    printf '\033]8;;file://%s\033\\%s\033]8;;\033\\' "$_enc" "$_label"
+}
+
 # UTC ISO-8601 (e.g. "2026-07-17T10:00:00Z") -> epoch seconds. Same BSD/GNU
 # dual-command fallback as parse_subscription_date above; prints nothing on
 # unparseable input rather than failing the caller.
@@ -752,6 +856,30 @@ print('%.4f' % total)
 PY_LOCAL_SPEND
 }
 
+# Timeout command, resolved once: GNU coreutils `timeout` on Linux, `gtimeout`
+# from homebrew's coreutils on macOS. Neither present means git runs unbounded,
+# exactly as it did before — a missing timeout must never disable git itself.
+GIT_TIMEOUT_CMD=""
+if command -v timeout >/dev/null 2>&1; then
+    GIT_TIMEOUT_CMD="timeout"
+elif command -v gtimeout >/dev/null 2>&1; then
+    GIT_TIMEOUT_CMD="gtimeout"
+fi
+
+# Every git call this script makes goes through here. The statusline re-runs
+# every couple of seconds, so a git call that blocks — a stalled network mount,
+# a credential helper waiting on a password — does not merely delay one render,
+# it queues stuck processes behind every following one. The time limit turns a
+# stuck call into the "no git here" case every caller already degrades to.
+# GIT_TERMINAL_PROMPT and GCM_INTERACTIVE stop git from ever pausing to ask
+# (none of these five commands touch the network, so nothing is lost);
+# GIT_OPTIONAL_LOCKS keeps a read-only call from taking the index lock.
+git_run() {
+    # shellcheck disable=SC2086  # deliberate split: empty when no timeout exists
+    GIT_OPTIONAL_LOCKS=0 GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=Never \
+        ${GIT_TIMEOUT_CMD:+$GIT_TIMEOUT_CMD "$cfg_git_timeout"} git "$@" 2>/dev/null
+}
+
 # ---------------------------------------------------------------------------
 # Everything below is the render flow; sourcing the script (tests) stops here
 # so the pure functions above are unit-testable without stdin or side effects.
@@ -791,7 +919,8 @@ apply_preset() {
     local _v
     case "$1" in
         full)
-            for _v in git_dirty git_ahead_behind git_file_stats activity agents todos orchestrator; do
+            for _v in git_dirty git_ahead_behind git_file_stats activity agents todos orchestrator \
+                      added_dirs prompt_cache today compactions speed; do
                 printf -v "cfg_show_${_v}" '%s' 1
             done
             ;;
@@ -808,7 +937,8 @@ apply_preset() {
             for _v in repo worktree lines_changed version git_dirty git_ahead_behind \
                       git_file_stats provider mode subscription cost total_tokens loc \
                       session_time thinking_time cache_ratio efficiency tool_calls \
-                      activity agents todos orchestrator; do
+                      activity agents todos orchestrator added_dirs prompt_cache \
+                      today compactions speed; do
                 printf -v "cfg_show_${_v}" '%s' 0
             done
             cfg_layout="compact"
@@ -840,9 +970,18 @@ if [ -f "$CONFIG_FILE" ]; then
             ["api_spend_cache_seconds", s(.api_spend_cache_seconds)],
             ["external_usage_path", s(.external_usage_path)],
             ["external_usage_max_age", s(.external_usage_max_age)],
+            ["external_usage_write_path", s(.external_usage_write_path)],
+            ["prompt_cache_ttl_seconds", s(.prompt_cache_ttl_seconds)],
+            ["hyperlinks", s(.hyperlinks)],
+            ["added_dirs_max", s(.added_dirs_max)],
+            ["added_dirs_name_width", s(.added_dirs_name_width)],
+            ["added_dirs_layout", s(.added_dirs_layout)],
             ["lines", (try (.lines | map(join(",")) | join("|")) catch "")],
+            ["right_align", (.right_align | if type == "array" then join(",") elif type == "string" then . else "" end)],
             ["push_warning_threshold", s(.git.push_warning_threshold)],
-            ["push_critical_threshold", s(.git.push_critical_threshold)]
+            ["push_critical_threshold", s(.git.push_critical_threshold)],
+            ["git_timeout_seconds", s(.git.timeout_seconds)],
+            ["jj_enabled", s(.jj.enabled)]
           ]
           + ((.model_params // {}) | to_entries | map(["model_params_" + .key, s(.value)]))
           + ((.model_pricing // {}) | to_entries | map(["model_pricing_" + .key, s(.value)]))
@@ -872,6 +1011,15 @@ if [ -f "$CONFIG_FILE" ]; then
                 api_spend_cache_seconds) is_num "$_v" && [ "${_v%.*}" -ge 60 ] && cfg_api_spend_cache_seconds="${_v%.*}" ;;
                 external_usage_path) [ -n "$_v" ] && cfg_external_usage_path="$_v" ;;
                 external_usage_max_age) is_num "$_v" && [ "${_v%.*}" -ge 0 ] && cfg_external_usage_max_age="${_v%.*}" ;;
+                external_usage_write_path) [ -n "$_v" ] && cfg_external_usage_write_path="$_v" ;;
+                prompt_cache_ttl_seconds) is_num "$_v" && [ "${_v%.*}" -ge 60 ] && cfg_prompt_cache_ttl_seconds="${_v%.*}" ;;
+                hyperlinks) _b=$(to_bool "$_v") && cfg_hyperlinks="$_b" ;;
+                added_dirs_max) is_num "$_v" && [ "${_v%.*}" -ge 1 ] && [ "${_v%.*}" -le 20 ] && cfg_added_dirs_max="${_v%.*}" ;;
+                added_dirs_name_width) is_num "$_v" && [ "${_v%.*}" -ge 4 ] && [ "${_v%.*}" -le 80 ] && cfg_added_dirs_name_width="${_v%.*}" ;;
+                added_dirs_layout) case "$_v" in inline|line) cfg_added_dirs_layout="$_v" ;; esac ;;
+                right_align) [ -n "$_v" ] && cfg_right_align="$_v" ;;
+                git_timeout_seconds) is_num "$_v" && [ "${_v%.*}" -ge 1 ] && [ "${_v%.*}" -le 60 ] && cfg_git_timeout="${_v%.*}" ;;
+                jj_enabled) _b=$(to_bool "$_v") && cfg_jj_enabled="$_b" ;;
                 model_params_*)
                     _p="${_k#model_params_}"
                     if [ -n "$_p" ] && [ -n "$_v" ]; then
@@ -892,7 +1040,7 @@ if [ -f "$CONFIG_FILE" ]; then
                 display_*)
                     _b=$(to_bool "$_v") || continue
                     case "${_k#display_}" in
-                        model|mode|repo|branch|worktree|lines_changed|version|git_dirty|git_ahead_behind|git_file_stats|provider|effort|subscription|sessions|balance|context|cost|total_tokens|loc|session_time|thinking_time|cache_ratio|efficiency|tool_calls|activity|agents|todos|orchestrator)
+                        model|mode|repo|branch|worktree|lines_changed|version|git_dirty|git_ahead_behind|git_file_stats|provider|effort|subscription|sessions|balance|context|cost|total_tokens|loc|session_time|thinking_time|cache_ratio|efficiency|tool_calls|activity|agents|todos|orchestrator|added_dirs|prompt_cache|today|compactions|speed)
                             printf -v "cfg_show_${_k#display_}" '%s' "$_b" ;;
                     esac
                     ;;
@@ -960,6 +1108,13 @@ case "$cfg_language" in
         L_BUCKET_READ="Read"
         L_BUCKET_MCP="MCP"
         L_BUCKET_OTHER="Other"
+        L_ADDED_DIRS="Added dirs:"
+        L_PROMPT_CACHE="⏱ until"
+        L_PROMPT_CACHE_EXPIRED="⏱ expired"
+        L_TODAY="Today"
+        L_COMPACTIONS="Compactions:"
+        L_SPEED="out:"
+        L_TOKENS_PER_SECOND="tok/s"
         L_ACTIVITY="Activity:"
         L_AGENTS="Agents:"
         L_TODO="Todo:"
@@ -990,6 +1145,7 @@ sv_cur_in=""; sv_cur_cc=""; sv_cur_cr=""
 api_ms=""; dur_ms=""; cost_usd=""; lines_added=""; lines_removed=""
 five_util_probe=""; five_reset=""; seven_util_probe=""; seven_reset=""
 is_agy_marker=""
+added_dirs=()
 
 while IFS=$'	' read -r _k _v; do
     case "$_k" in
@@ -1020,10 +1176,11 @@ while IFS=$'	' read -r _k _v; do
         seven_pct) seven_util_probe="$_v" ;;
         seven_reset) seven_reset="$_v" ;;
         is_agy) is_agy_marker="$_v" ;;
+        added_dir) [ -n "$_v" ] && added_dirs+=("$_v") ;;
     esac
 done <<< "$(jq -r '
     def s(v): if v == null then "" else (v | tostring) end;
-    [
+    ([
       ["model", s(.model.display_name // .model.name // .model.id // .model)],
       ["effort_level", s(.effort.level)],
       ["project_dir", s(.workspace.project_dir // .workspace.current_dir // .workspace // .workspaceUris[0])],
@@ -1051,7 +1208,20 @@ done <<< "$(jq -r '
       ["seven_pct", s(.rate_limits.seven_day.used_percentage)],
       ["seven_reset", s(.rate_limits.seven_day.resets_at)],
       ["is_agy", s(if .vcsName != null or .agent_state != null or (.model.id != null and (.model.id | test("gemini"; "i"))) then 1 else 0 end)]
-    ] | .[] | @tsv' <<< "$input" 2>/dev/null)"
+    ]
+    + ((.workspace.added_dirs // .workspace.additional_directories // [])
+       | if type == "array" then map(["added_dir", s(.)]) else [] end)
+    ) | .[] | @tsv' <<< "$input" 2>/dev/null)"
+
+# Every value above came from outside this script and every one of them is
+# printed to a terminal, so all of them are cleaned in one place rather than at
+# each render site — a new segment then cannot reintroduce the hole by
+# forgetting. Paths keep their own cleaning at the point they are shortened.
+model=$(sanitize_text "$model")
+effort_level=$(sanitize_text "$effort_level")
+worktree=$(sanitize_text "$worktree")
+agent_name=$(sanitize_text "$agent_name")
+cc_version=$(sanitize_text "$cc_version")
 
 # Platform detection: Claude Code vs. Google Antigravity CLI (agy)
 IS_ANTIGRAVITY=0
@@ -1077,11 +1247,15 @@ fi
 # independently, so each is restored on its own.
 # ---------------------------------------------------------------------------
 _rl_cache="$CACHE_ROOT/rate-limits.tsv"
+RL_FROM_STDIN=0
 if is_num "$five_util_probe" && is_num "$seven_util_probe"; then
+    RL_FROM_STDIN=1
+    debug_log "rate limits: from stdin (5h=${five_util_probe}% 7d=${seven_util_probe}%)"
     printf '%s\t%s\t%s\t%s\n' \
         "$five_util_probe" "$five_reset" "$seven_util_probe" "$seven_reset" \
         > "$_rl_cache" 2>/dev/null
 elif [ -f "$_rl_cache" ]; then
+    debug_log "rate limits: absent from stdin, trying the cross-session cache"
     IFS=$'\t' read -r _rl_five_pct _rl_five_reset _rl_seven_pct _rl_seven_reset \
         < "$_rl_cache" 2>/dev/null
     _rl_now=$(date +%s)
@@ -1093,6 +1267,8 @@ elif [ -f "$_rl_cache" ]; then
         && is_num "${_rl_seven_reset%.*}" && [ "${_rl_seven_reset%.*}" -gt "$_rl_now" ]; then
         seven_util_probe="$_rl_seven_pct"; seven_reset="$_rl_seven_reset"
     fi
+else
+    debug_log "rate limits: absent from stdin and no cache yet (the 5h/Nd bars stay empty until this session's first API call)"
 fi
 
 # External usage snapshot (opt-in): when stdin omits rate_limits and no live
@@ -1101,6 +1277,57 @@ fi
 # optionally carry per-model weekly windows the stdin payload never includes.
 # Only a snapshot fresher than external_usage_max_age is trusted, so a stale
 # file never resurrects a rolled-over window.
+# Producer side (opt-in): the authoritative rate-limit windows arrive free on
+# stdin, are rendered, and were then thrown away — while usage-feeder.sh has to
+# ask a throttled source for the same numbers. Writing them out means the feeder
+# usually finds recent data already waiting and has to poll less, not more.
+#
+# This makes the statusline a SECOND writer on a file the feeder maintains, so
+# it takes the feeder's own rule: never replace fresher data with older. A
+# window that has rolled over has a later resets_at; within the same window a
+# higher used_percentage is the newer reading. Anything else is left alone, so
+# the bars can only ever move forward. The write is staged through .tmp and
+# promoted by mv, so a render interrupted mid-write cannot leave a truncated
+# snapshot for the feeder or the consumer side below to read.
+if [ "$RL_FROM_STDIN" -eq 1 ] && [ -n "$cfg_external_usage_write_path" ]; then
+    _euw_path="$cfg_external_usage_write_path"
+    # shellcheck disable=SC2088  # matching a literal leading ~/ in config text, not expanding
+    case "$_euw_path" in "~/"*) _euw_path="$HOME/${_euw_path#\~/}" ;; esac
+    _euw_ok=0
+    case "$_euw_path" in
+        /*.json) [ -d "${_euw_path%/*}" ] && _euw_ok=1 ;;
+    esac
+    if [ "$_euw_ok" -eq 1 ]; then
+        _euw_prev_reset=0; _euw_prev_pct=-1
+        if [ -f "$_euw_path" ]; then
+            IFS=$'\t' read -r _euw_prev_reset _euw_prev_pct <<< "$(jq -r '
+                [(.rate_limits.five_hour.resets_at // 0), (.rate_limits.five_hour.used_percentage // -1)]
+                | @tsv' "$_euw_path" 2>/dev/null)"
+            is_num "${_euw_prev_reset%.*}" || _euw_prev_reset=0
+            is_num "${_euw_prev_pct%.*}" || _euw_prev_pct=-1
+        fi
+        _euw_write=0
+        if [ "${five_reset%.*}" -gt "${_euw_prev_reset%.*}" ] 2>/dev/null; then
+            _euw_write=1
+        elif [ "${five_reset%.*}" = "${_euw_prev_reset%.*}" ] \
+             && [ "${five_util_probe%.*}" -ge "${_euw_prev_pct%.*}" ] 2>/dev/null; then
+            _euw_write=1
+        fi
+        if [ "$_euw_write" -eq 1 ]; then
+            if jq -n --argjson f5 "$five_util_probe" --argjson r5 "${five_reset:-0}" \
+                    --argjson f7 "$seven_util_probe" --argjson r7 "${seven_reset:-0}" \
+                    '{rate_limits: {five_hour: {used_percentage: $f5, resets_at: $r5},
+                                    seven_day: {used_percentage: $f7, resets_at: $r7}}}' \
+                    > "${_euw_path}.tmp" 2>/dev/null; then
+                chmod 600 "${_euw_path}.tmp" 2>/dev/null
+                mv "${_euw_path}.tmp" "$_euw_path" 2>/dev/null
+            else
+                rm -f "${_euw_path}.tmp" 2>/dev/null
+            fi
+        fi
+    fi
+fi
+
 model_scoped_rows=""
 if [ -n "$cfg_external_usage_path" ]; then
     _eu_path="$cfg_external_usage_path"
@@ -1108,6 +1335,9 @@ if [ -n "$cfg_external_usage_path" ]; then
     case "$_eu_path" in "~/"*) _eu_path="$HOME/${_eu_path#\~/}" ;; esac
     if [ -f "$_eu_path" ]; then
         _eu_age=$(( $(date +%s) - $(file_mtime "$_eu_path") ))
+        if [ "$cfg_external_usage_max_age" -ne 0 ] && [ "$_eu_age" -gt "$cfg_external_usage_max_age" ]; then
+            debug_log "external usage snapshot ignored: ${_eu_age}s old, cap is ${cfg_external_usage_max_age}s"
+        fi
         if [ "$cfg_external_usage_max_age" -eq 0 ] || [ "$_eu_age" -le "$cfg_external_usage_max_age" ]; then
             _eu_out=$(jq -r '
                 def s(v): if v == null then "" else (v | tostring) end;
@@ -1139,11 +1369,63 @@ fi
 [ "$worktree" = "null" ] && worktree=""
 [ -z "$cwd" ] && cwd="$current_dir"
 
-git_root=$(git -C "${cwd:-$project_dir}" rev-parse --show-toplevel 2>/dev/null)
+git_root=$(git_run -C "${cwd:-$project_dir}" rev-parse --show-toplevel)
+debug_log "git: timeout=${GIT_TIMEOUT_CMD:-none} root=${git_root:-<none>}"
 [ -z "$git_root" ] && git_root="${cwd:-$project_dir}"
 git_branch=""
 [ -n "$git_root" ] && [ -d "$git_root" ] && \
-    git_branch=$(GIT_OPTIONAL_LOCKS=0 git -C "$git_root" rev-parse --abbrev-ref HEAD 2>/dev/null)
+    git_branch=$(git_run -C "$git_root" rev-parse --abbrev-ref HEAD)
+
+# ---------------------------------------------------------------------------
+# Jujutsu — opt-in, and one version control system per repository, never both
+# on the line at once. Two conditions are required before jj takes over: the
+# jj.enabled flag, and a real .jj control directory at or above the working
+# directory. A stray .jj inside an ordinary git repository must not cost that
+# repository its branch name, which is the one way this could go wrong on
+# line 1 of every session.
+#
+# --ignore-working-copy is not optional: without it every jj command snapshots
+# the working copy, so a statusline re-running every two seconds would be
+# writing to the user's repository continuously. This segment is read-only.
+# ---------------------------------------------------------------------------
+JJ_ROOT=""
+jj_conflict=""
+git_dirty_override=""
+if [ "$cfg_jj_enabled" = "1" ] && command -v jj >/dev/null 2>&1; then
+    _jj_probe="${cwd:-$project_dir}"
+    while [ -n "$_jj_probe" ] && [ "$_jj_probe" != "/" ]; do
+        if [ -d "$_jj_probe/.jj" ]; then
+            JJ_ROOT="$_jj_probe"
+            break
+        fi
+        _jj_probe="${_jj_probe%/*}"
+    done
+fi
+if [ -n "$JJ_ROOT" ]; then
+    git_root="$JJ_ROOT"
+    _jj_dir="$CACHE_ROOT/jj-cache"
+    mkdir -p "$_jj_dir"
+    _jj_key=$(echo "$JJ_ROOT" | tr '/' '_')
+    _jj_file="$_jj_dir/${_jj_key}.txt"
+    _jj_stamp="$_jj_dir/${_jj_key}.stamp"
+    _jj_do=1
+    if [ -f "$_jj_stamp" ]; then
+        [ $(( $(date +%s) - $(file_mtime "$_jj_stamp") )) -lt 10 ] && _jj_do=0
+    fi
+    if [ "$_jj_do" -eq 1 ]; then
+        # shellcheck disable=SC2086  # deliberate split: empty when no timeout exists
+        ${GIT_TIMEOUT_CMD:+$GIT_TIMEOUT_CMD "$cfg_git_timeout"} \
+            jj --repository "$JJ_ROOT" --no-pager --color never --ignore-working-copy \
+               log --no-graph -r @ -T \
+               'separate("\t", bookmarks.join(","), change_id.shortest(8), if(empty, "", "dirty"), if(conflict, "conflict", "")) ++ "\n"' \
+            > "$_jj_file" 2>/dev/null
+        touch "$_jj_stamp"
+    fi
+    IFS=$'\t' read -r _jj_bookmarks _jj_change _jj_dirty _jj_conf < "$_jj_file" 2>/dev/null
+    git_branch=$(sanitize_text "${_jj_bookmarks:-$_jj_change}")
+    [ "$_jj_dirty" = "dirty" ] && git_dirty_override=1
+    [ "$_jj_conf" = "conflict" ] && jj_conflict=1
+fi
 
 # ---------------------------------------------------------------------------
 # Backend detection
@@ -1293,7 +1575,12 @@ fi
 # ---------------------------------------------------------------------------
 git_dirty=""; git_ahead=""; git_behind=""
 git_staged=""; git_modified=""; git_untracked=""
-if [ -n "$git_branch" ] && { [ "$cfg_show_git_dirty" = "1" ] || [ "$cfg_show_git_ahead_behind" = "1" ] || [ "$cfg_show_git_file_stats" = "1" ]; }; then
+# jj already answered the dirty question in its own pass, and has no upstream
+# ahead/behind or staging area to report — so git is not consulted at all for a
+# repository jj has taken over.
+if [ -n "$JJ_ROOT" ]; then
+    git_dirty="${git_dirty_override:-}"
+elif [ -n "$git_branch" ] && { [ "$cfg_show_git_dirty" = "1" ] || [ "$cfg_show_git_ahead_behind" = "1" ] || [ "$cfg_show_git_file_stats" = "1" ]; }; then
     _gs_dir="$CACHE_ROOT/gitstatus-cache"
     mkdir -p "$_gs_dir"
     _gs_key=$(echo "$git_root" | tr '/' '_')
@@ -1317,14 +1604,14 @@ if [ -n "$git_branch" ] && { [ "$cfg_show_git_dirty" = "1" ] || [ "$cfg_show_git
                         case "${_pline:1:1}" in [MD]) _mo=$(( _mo + 1 )) ;; esac
                         ;;
                 esac
-            done < <(GIT_OPTIONAL_LOCKS=0 git -C "$git_root" status --porcelain 2>/dev/null)
+            done < <(git_run -C "$git_root" status --porcelain)
         else
             # First line only — a dirty/clean answer doesn't need the full listing.
-            _first=$(GIT_OPTIONAL_LOCKS=0 git -C "$git_root" status --porcelain 2>/dev/null | head -n 1)
+            _first=$(git_run -C "$git_root" status --porcelain | head -n 1)
             [ -n "$_first" ] && _d=1
         fi
         if [ "$cfg_show_git_ahead_behind" = "1" ]; then
-            read -r _bh _ah <<< "$(GIT_OPTIONAL_LOCKS=0 git -C "$git_root" rev-list --left-right --count '@{upstream}...HEAD' 2>/dev/null)"
+            read -r _bh _ah <<< "$(git_run -C "$git_root" rev-list --left-right --count '@{upstream}...HEAD')"
         fi
         echo "$_d ${_ah:--} ${_bh:--} $_st $_mo $_un" > "$_gs_file"
         touch "$_gs_stamp"
@@ -1386,15 +1673,15 @@ if [ "$cfg_show_orchestrator" = "1" ] && [ -n "$git_root" ]; then
                 master_committed=$(( master_committed + 1 ))
             elif [ -z "$master_open_num" ]; then
                 master_open_num="$_ms_num"
-                master_open_status="$_ms_status"
+                master_open_status=$(sanitize_text "$_ms_status")
                 if [[ "$_ms_title" == *"spawned="* ]]; then
                     _ms_sp="${_ms_title#*spawned=}"
                     master_open_spawned=$(trim_ws "${_ms_sp%%]*}")
                 fi
                 if [[ "$_ms_title" == *"["* ]]; then
-                    master_open_title=$(trim_ws "${_ms_title%%\[*}")
+                    master_open_title=$(sanitize_text "${_ms_title%%\[*}")
                 else
-                    master_open_title=$(trim_ws "$_ms_title")
+                    master_open_title=$(sanitize_text "$_ms_title")
                 fi
             fi
         done < "$_master_plan_file"
@@ -1470,10 +1757,14 @@ bucket_read=""; bucket_mcp=""; bucket_other=""
 activity_value=""
 agents_value=""
 todo_value=""
+compactions_count=""
+prompt_cache_expiry=""; prompt_cache_ttl=""; prompt_cache_fallback_base=""
+speed_value=""
 
 _need_transcript=0
 for _flag in "$cfg_show_total_tokens" "$cfg_show_tool_calls" "$cfg_show_efficiency" \
-             "$cfg_show_activity" "$cfg_show_agents" "$cfg_show_todos"; do
+             "$cfg_show_activity" "$cfg_show_agents" "$cfg_show_todos" \
+             "$cfg_show_compactions" "$cfg_show_prompt_cache" "$cfg_show_speed"; do
     [ "$_flag" = "1" ] && _need_transcript=1
 done
 [ "$_want_transcript_model" -eq 1 ] && _need_transcript=1
@@ -1487,9 +1778,11 @@ if [ "$_need_transcript" -eq 1 ] && [ -n "$transcript_path" ] && [ -f "$transcri
     _tr_src_mtime=$(file_mtime "$transcript_path")
     _tr_cached_mtime=$(cat "$_tr_stamp" 2>/dev/null || echo -1)
     if [ "$_tr_src_mtime" != "$_tr_cached_mtime" ]; then
+        debug_log "transcript changed (mtime ${_tr_src_mtime}); re-running the transcript pass"
         _tr_value=$(python3 - "$transcript_path" 2>/dev/null <<'PYEOF'
 import json
 import os
+import re
 import sys
 from datetime import datetime
 
@@ -1505,21 +1798,47 @@ tools = []
 tools_by_id = {}
 latest_todos = None
 latest_model = ''
+compactions = 0
+# Prompt-cache expiry and output speed are both read off the newest MAIN-session
+# assistant message. Sub-agent responses (isSidechain) are excluded on purpose:
+# they run against their own cache and never refresh this session's, so counting
+# one would report an expiry that is not the one the next message pays for.
+cache_write_epoch = None
+cache_write_ttl = 0
+last_main_assistant_epoch = None
+speed_tokens = 0
+speed_seconds = None
+previous_epoch = None
+
+
+# A transcript records whatever the session touched — a file name, a search
+# pattern, a to-do title, an agent description — and every one of those reaches
+# a terminal that obeys escape sequences. Whole sequences are deleted first, so
+# the truncation below can never leave a half-removed sequence behind; what is
+# left of the control characters (and the bidi overrides, which disguise what a
+# line really says) becomes a space, preserving the old tab/newline behaviour.
+_ESC_RE = re.compile(r'\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?|\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[@-_]?')
+_CTRL_RE = re.compile('[\x00-\x1f\x7f-\x9f‎‏‪-‮⁦-⁩]')
 
 
 def clean(text, limit):
     if not isinstance(text, str):
         return ''
-    return text.replace('\t', ' ').replace('\n', ' ').strip()[:limit]
+    return _CTRL_RE.sub(' ', _ESC_RE.sub('', text)).strip()[:limit]
+
+
+def to_seconds(timestamp):
+    if not isinstance(timestamp, str):
+        return None
+    try:
+        return datetime.fromisoformat(timestamp.replace('Z', '+00:00')).timestamp()
+    except Exception:
+        return None
 
 
 def to_epoch(timestamp):
-    if not isinstance(timestamp, str):
-        return ''
-    try:
-        return str(int(datetime.fromisoformat(timestamp.replace('Z', '+00:00')).timestamp()))
-    except Exception:
-        return ''
+    seconds = to_seconds(timestamp)
+    return '' if seconds is None else str(int(seconds))
 
 
 def target_for(name, tool_input):
@@ -1539,6 +1858,19 @@ def target_for(name, tool_input):
         return clean(tool_input.get('skill'), 30)
     if low == 'webfetch' or low == 'websearch':
         return clean(tool_input.get('url') or tool_input.get('query'), 30)
+    return ''
+
+
+# Absolute file path of a tool call, for the optional activity hyperlink. Only
+# an already-absolute path qualifies: a relative one would have to be resolved
+# against a working directory this pass does not know, and guessing it would
+# produce a link that opens the wrong file.
+def path_for(tool_input):
+    if not isinstance(tool_input, dict):
+        return ''
+    candidate = tool_input.get('file_path') or tool_input.get('path') or tool_input.get('notebook_path')
+    if isinstance(candidate, str) and candidate.startswith('/'):
+        return clean(candidate, 200)
     return ''
 
 
@@ -1563,13 +1895,16 @@ try:
                 obj = json.loads(line)
             except Exception:
                 continue
+            if obj.get('type') == 'system' and obj.get('subtype') == 'compact_boundary':
+                compactions += 1
+            row_epoch = to_seconds(obj.get('timestamp'))
             msg = obj.get('message') or {}
             role = msg.get('role')
             content = msg.get('content')
             if role == 'assistant':
                 model_name = msg.get('model')
                 if isinstance(model_name, str) and model_name and model_name != '<synthetic>':
-                    latest_model = model_name
+                    latest_model = clean(model_name, 60)
                 usage = msg.get('usage') or {}
                 for key in ('input_tokens', 'cache_creation_input_tokens', 'cache_read_input_tokens'):
                     value = usage.get(key)
@@ -1578,6 +1913,29 @@ try:
                 out = usage.get('output_tokens')
                 if isinstance(out, (int, float)):
                     total_out += out
+                if not obj.get('isSidechain') and row_epoch is not None:
+                    last_main_assistant_epoch = row_epoch
+                    creation = usage.get('cache_creation') or {}
+                    ttl = 0
+                    if creation.get('ephemeral_1h_input_tokens'):
+                        ttl = 3600
+                    elif creation.get('ephemeral_5m_input_tokens'):
+                        ttl = 300
+                    elif usage.get('cache_creation_input_tokens'):
+                        ttl = 300
+                    if ttl:
+                        cache_write_epoch = row_epoch
+                        cache_write_ttl = ttl
+                    # The interval is measured to the row that triggered this
+                    # response (a user message or a tool result), which is the
+                    # only timing the transcript records. It is meaningless
+                    # across a resume or a long idle gap, so the render side
+                    # drops any figure outside a plausible band.
+                    if isinstance(out, (int, float)) and previous_epoch is not None:
+                        speed_tokens = out
+                        speed_seconds = row_epoch - previous_epoch
+            if row_epoch is not None:
+                previous_epoch = row_epoch
             elif obj.get('type') == 'PLANNER_RESPONSE':
                 usage = obj.get('usage') or {}
                 for key in ('input_tokens', 'prompt_tokens', 'cached_tokens', 'cache_read_input_tokens'):
@@ -1590,7 +1948,7 @@ try:
                         total_out += value
                 model_name = obj.get('model') or (obj.get('model_info') or {}).get('name')
                 if isinstance(model_name, str) and model_name:
-                    latest_model = model_name
+                    latest_model = clean(model_name, 60)
                 tool_calls = obj.get('tool_calls')
                 if isinstance(tool_calls, list):
                     for tc in tool_calls:
@@ -1611,11 +1969,12 @@ try:
                             buckets['OTHER'] += 1
                         entry = {
                             'id': tc.get('id') or str(len(tools)),
-                            'name': name,
+                            'name': clean(name, 24),
                             'low': low,
                             'done': True,
                             'epoch': to_epoch(obj.get('created_at')),
                             'target': clean(target_for(name, tc.get('arguments') or {}), 30),
+                            'path': path_for(tc.get('arguments') or {}),
                         }
                         tools.append(entry)
             if not isinstance(content, list):
@@ -1642,11 +2001,12 @@ try:
                     tool_input = block.get('input')
                     entry = {
                         'id': block.get('id'),
-                        'name': name,
+                        'name': clean(name, 24),
                         'low': low,
                         'done': False,
                         'epoch': to_epoch(obj.get('timestamp')),
                         'target': clean(target_for(name, tool_input), 30),
+                        'path': path_for(tool_input),
                     }
                     if low in agent_tools and isinstance(tool_input, dict):
                         entry['agent'] = True
@@ -1673,6 +2033,20 @@ if latest_model:
 print(f'BUCKET\tTOTAL\t{sum(buckets.values())}')
 for key, count in buckets.items():
     print(f'BUCKET\t{key}\t{count}')
+if compactions:
+    print(f'COMPACTIONS\t{compactions}')
+if cache_write_epoch is not None and cache_write_ttl:
+    print(f'CACHEEXP\t{int(cache_write_epoch + cache_write_ttl)}\t{cache_write_ttl}')
+elif last_main_assistant_epoch is not None:
+    # No tier recorded on any cache write — the render side dates the
+    # configured fallback TTL from here rather than assuming a tier.
+    print(f'CACHEBASE\t{int(last_main_assistant_epoch)}')
+# A rate is only meaningful over a plausible interval: below half a second the
+# division amplifies clock noise, and a gap of minutes means the session was
+# idle, not slow. Outside that band, and under a response too short to average,
+# nothing is emitted rather than a figure that would mislead.
+if speed_seconds is not None and 0.5 <= speed_seconds <= 600 and speed_tokens >= 50:
+    print('SPEED\t%.1f' % (speed_tokens / speed_seconds))
 
 # Activity groups: newest first, consecutive completed calls of the same tool
 # collapsed into one "×N" group. Agents and TodoWrite have their own lines.
@@ -1686,10 +2060,12 @@ for entry in reversed(tools):
         continue
     if len(groups) >= 5:
         break
-    groups.append({'name': entry['name'], 'status': status, 'count': 1, 'target': entry['target']})
+    groups.append({'name': entry['name'], 'status': status, 'count': 1,
+                   'target': entry['target'], 'path': entry.get('path', '')})
 for group in groups:
     target = group['target'] if group['count'] == 1 else ''
-    print(f"ACT\t{group['status']}\t{group['count']}\t{group['name']}\t{target}")
+    path = group['path'] if group['count'] == 1 else ''
+    print(f"ACT\t{group['status']}\t{group['count']}\t{group['name']}\t{target}\t{path}")
 
 for entry in tools:
     if entry.get('agent') and not entry['done']:
@@ -1713,12 +2089,20 @@ PYEOF
 
     if [ -s "$_tr_file" ]; then
         _now_epoch=$(date +%s)
-        while IFS=$'\t' read -r _tag _a _b _c _d; do
+        while IFS=$'\t' read -r _tag _a _b _c _d _e; do
             case "$_tag" in
                 TOKENS)
                     session_total_input="$_a"; session_total_output="$_b" ;;
                 MODEL)
                     transcript_model="$_a" ;;
+                COMPACTIONS)
+                    is_num "$_a" && compactions_count="$_a" ;;
+                CACHEEXP)
+                    is_num "$_a" && { prompt_cache_expiry="$_a"; prompt_cache_ttl="$_b"; } ;;
+                CACHEBASE)
+                    is_num "$_a" && prompt_cache_fallback_base="$_a" ;;
+                SPEED)
+                    is_num "$_a" && speed_value="$_a" ;;
                 BUCKET)
                     is_num "$_b" || continue
                     case "$_a" in
@@ -1732,15 +2116,19 @@ PYEOF
                     esac
                     ;;
                 ACT)
-                    # _a status, _b count, _c name, _d target
+                    # _a status, _b count, _c name, _d target, _e absolute path
+                    _act_target="$_d"
+                    if [ "$cfg_hyperlinks" = "1" ] && [ -n "$_d" ] && [ -n "$_e" ]; then
+                        _act_link=$(safe_hyperlink "$_e" "$_d") && _act_target="$_act_link"
+                    fi
                     if [ "$_a" = "run" ]; then
                         _act="${ORANGE}◐${RESET} ${CYAN}${_c}${RESET}"
-                        [ -n "$_d" ] && _act="${_act}${C_MUTED}: ${_d}${RESET}"
+                        [ -n "$_d" ] && _act="${_act}${C_MUTED}: ${_act_target}${RESET}"
                     elif is_num "$_b" && [ "$_b" -gt 1 ]; then
                         _act="${GREEN}✓${RESET} ${CYAN}${_c}${RESET} ${C_ACCENT}×${_b}${RESET}"
                     else
                         _act="${GREEN}✓${RESET} ${CYAN}${_c}${RESET}"
-                        [ -n "$_d" ] && _act="${_act}${C_MUTED}: ${_d}${RESET}"
+                        [ -n "$_d" ] && _act="${_act}${C_MUTED}: ${_act_target}${RESET}"
                     fi
                     [ -n "$activity_value" ] && activity_value="${activity_value} | "
                     activity_value="${activity_value}${_act}"
@@ -1876,11 +2264,12 @@ fi
 # segments onto lines. Segment names are the config/layout vocabulary.
 # ---------------------------------------------------------------------------
 
+seg_mode=""
+[ -n "$mode_badge" ] && seg_mode="${C_ACCENT}${mode_badge}${RESET}"
+
 seg_model=""
 if [ "$cfg_show_model" = "1" ] && [ -n "$model" ]; then
-    seg_model="${C_MODEL}${L_MODEL}${RESET}"
-    [ -n "$mode_badge" ] && seg_model="${seg_model} ${C_ACCENT}${mode_badge}${RESET}"
-    seg_model="${seg_model} ${C_MODEL}${model}${RESET}"
+    seg_model="${C_MODEL}${L_MODEL}${RESET} ${C_MODEL}${model}${RESET}"
     _model_params=$(model_params_label "$model")
     [ -n "$_model_params" ] && seg_model="${seg_model} $(muted "(${_model_params})")"
     [ -n "$provider_badge" ] && seg_model="${seg_model} $(muted "[${provider_badge}]")"
@@ -1897,6 +2286,9 @@ if [ "$cfg_show_branch" = "1" ] && [ -n "$git_branch" ]; then
     _branch_display="$git_branch"
     [ "$cfg_show_git_dirty" = "1" ] && [ "$git_dirty" = "1" ] && _branch_display="${_branch_display}*"
     _branch_part="${C_BRANCH}${_branch_display}${RESET}"
+    # An unresolved jj conflict is the one state worth a colour of its own here:
+    # it blocks the next operation, which a dirty marker does not.
+    [ "$jj_conflict" = "1" ] && _branch_part="${_branch_part} ${RED}⚠${RESET}"
     if [ "$cfg_show_git_ahead_behind" = "1" ]; then
         if is_num "$git_ahead" && [ "$git_ahead" -gt 0 ]; then
             if [ "$git_ahead" -ge "$cfg_push_critical" ]; then _ab_color="$RED"
@@ -1929,7 +2321,7 @@ fi
 seg_repo=""; seg_branch=""; seg_worktree=""
 _repo_part=""
 if [ "$cfg_show_repo" = "1" ] && [ -n "$project_dir" ]; then
-    _repo_display=$(path_tail "$project_dir" "$cfg_path_levels")
+    _repo_display=$(sanitize_text "$(path_tail "$project_dir" "$cfg_path_levels")")
     [ -n "$_repo_display" ] && _repo_part="${C_REPO}${_repo_display}${RESET}"
 fi
 if [ -n "$_repo_part" ]; then
@@ -2019,6 +2411,7 @@ if [ "$IS_SUBSCRIPTION" -eq 1 ] && [ "$cfg_show_sessions" = "1" ]; then
     # stdin payload never carries): one compact "name bar pct%" clause each.
     if [ -n "$model_scoped_rows" ]; then
         while IFS=$'\t' read -r _ms_name _ms_pct _ms_reset; do
+            _ms_name=$(sanitize_text "$_ms_name")
             [ -n "$_ms_name" ] || continue
             _ms_pct=${_ms_pct%.*}; is_num "$_ms_pct" || continue
             _ms_color=$(usage_color "$_ms_pct" "$cfg_7d_warn" "$cfg_7d_crit")
@@ -2199,6 +2592,97 @@ if [ "$cfg_show_cost" = "1" ] && is_num "$cost_usd"; then
     seg_cost="$(muted "${_cost_label}") ${C_ACCENT}\$$(printf "%.2f" "$cost_usd")${RESET}"
 fi
 
+# Today's spend across every session, which is the figure people actually
+# budget against — the session cost resets on every /clear, so three clears into
+# a day it reads low while the day's real total is several times that.
+#
+# The ledger is one file per local calendar day, one row per session, holding
+# the cost that session had reached when this day first saw it (its baseline)
+# and its latest. Today's total is the sum of the differences — so a session
+# already running when the option was enabled contributes only what it spends
+# from that point, and a session that crosses midnight is split across the two
+# days by getting a fresh baseline in the new day's file. Rows unseen for more
+# than a day are dropped on every write, so the file cannot grow without limit.
+seg_today=""
+if [ "$cfg_show_today" = "1" ] && is_num "$cost_usd"; then
+    _dc_dir="$CACHE_ROOT/daily-cost"
+    mkdir -p "$_dc_dir" 2>/dev/null
+    _dc_file="$_dc_dir/$(date +%Y-%m-%d).tsv"
+    if [ ! -f "$_dc_file" ]; then
+        : > "$_dc_file"
+        # First render of a new day is the one moment worth paying for a sweep
+        # of the day files that are now too old to ever be read again.
+        find "$_dc_dir" -name '*.tsv' -mtime +2 -delete 2>/dev/null
+    fi
+    _dc_total=$(awk -F'\t' -v sid="${session_id:-unknown}" -v cost="$cost_usd" \
+                    -v now="$(date +%s)" -v out="${_dc_file}.tmp" '
+        BEGIN { OFS = "\t"; total = 0; seen = 0 }
+        NF >= 4 && $1 == sid {
+            base = $2 + 0
+            # The same id reappearing below its own baseline is a fresh session
+            # reusing it; re-baseline rather than subtracting into the negative.
+            if (cost + 0 < base) base = cost + 0
+            print sid, base, cost, now > out
+            total += cost - base
+            seen = 1
+            next
+        }
+        NF >= 4 && now - $4 <= 86400 { print $1, $2, $3, $4 > out; total += $3 - $2 }
+        END {
+            if (!seen) print sid, cost, cost, now > out
+            printf "%.2f", total
+        }' "$_dc_file" 2>/dev/null)
+    mv "${_dc_file}.tmp" "$_dc_file" 2>/dev/null
+    if is_num "$_dc_total"; then
+        seg_today="$(muted "$L_TODAY") ${C_ACCENT}\$${_dc_total}${RESET}"
+    fi
+fi
+
+# Extra working directories added with /add-dir, which the stdin JSON already
+# carries. The list is unbounded, so it gets the three limits the field needs:
+# at most added_dirs_max render, the remainder collapses to "+N more", and each
+# name is cut to added_dirs_name_width. In the default "inline" layout this
+# rides the identity line beside the project name; "line" gives it a row.
+seg_added_dirs=""
+added_dirs_inline=""
+if [ "$cfg_show_added_dirs" = "1" ] && [ "${#added_dirs[@]}" -gt 0 ]; then
+    _ad_shown=0; _ad_names=()
+    for _ad in "${added_dirs[@]}"; do
+        [ "$_ad_shown" -lt "$cfg_added_dirs_max" ] || break
+        _ad_name=$(sanitize_text "$(path_tail "$_ad" 1)")
+        [ -n "$_ad_name" ] || continue
+        [ "${#_ad_name}" -gt "$cfg_added_dirs_name_width" ] && \
+            _ad_name="${_ad_name:0:$cfg_added_dirs_name_width}…"
+        _ad_names+=("$_ad_name")
+        _ad_shown=$(( _ad_shown + 1 ))
+    done
+    _ad_more=$(( ${#added_dirs[@]} - _ad_shown ))
+    if [ "${#_ad_names[@]}" -gt 0 ] || [ "$_ad_more" -gt 0 ]; then
+        if [ "$cfg_added_dirs_layout" = "line" ]; then
+            _ad_joined=""
+            for _ad_name in "${_ad_names[@]}"; do
+                _ad_joined="${_ad_joined}${_ad_joined:+, }${_ad_name}"
+            done
+            [ "$_ad_more" -gt 0 ] && _ad_joined="${_ad_joined}${_ad_joined:+, }+${_ad_more} more"
+            seg_added_dirs="${C_LABEL}${L_ADDED_DIRS}${RESET} ${C_BRANCH}${_ad_joined}${RESET}"
+        else
+            for _ad_name in "${_ad_names[@]}"; do
+                added_dirs_inline="${added_dirs_inline} ${C_BRANCH}+${_ad_name}${RESET}"
+            done
+            [ "$_ad_more" -gt 0 ] && added_dirs_inline="${added_dirs_inline} $(muted "+${_ad_more} more")"
+        fi
+    fi
+fi
+# The inline form belongs to whichever identity segment actually rendered, so a
+# custom layout that dropped the repo still shows the session's real reach.
+if [ -n "$added_dirs_inline" ]; then
+    if [ -n "$seg_repo" ]; then seg_repo="${seg_repo}${added_dirs_inline}"
+    elif [ -n "$seg_branch" ]; then seg_branch="${seg_branch}${added_dirs_inline}"
+    elif [ -n "$seg_worktree" ]; then seg_worktree="${seg_worktree}${added_dirs_inline}"
+    else seg_added_dirs="${C_LABEL}${L_ADDED_DIRS}${RESET}${added_dirs_inline}"
+    fi
+fi
+
 seg_total_tokens=""
 if [ "$cfg_show_total_tokens" = "1" ] && is_num "$session_total_input" && is_num "$session_total_output"; then
     _in_fmt=$(fmt_tokens_k "$session_total_input")
@@ -2232,6 +2716,48 @@ seg_cache_ratio=""
 if [ "$cfg_show_cache_ratio" = "1" ] && [ "$token_total" -gt 0 ]; then
     cache_ratio=$(( ${token_cr%.*} * 100 / token_total ))
     seg_cache_ratio="$(muted "${L_CACHE_RATIO} ${cache_ratio}%")"
+fi
+
+# Prompt-cache expiry. A CLOCK TIME, never a countdown: the statusline only
+# repaints while Claude Code is active, so between turns — exactly when the
+# cache is draining — a countdown freezes and keeps reporting a number that has
+# stopped being true, while a clock time stays correct however stale the render
+# is. The tier comes from the transcript's own cache write (5 minutes vs. one
+# hour); prompt_cache_ttl_seconds only fills in for transcripts recording
+# neither, and never overrides one that does.
+seg_prompt_cache=""
+if [ "$cfg_show_prompt_cache" = "1" ]; then
+    _pc_expiry="$prompt_cache_expiry"
+    if [ -z "$_pc_expiry" ] && is_num "$prompt_cache_fallback_base"; then
+        _pc_expiry=$(( prompt_cache_fallback_base + cfg_prompt_cache_ttl_seconds ))
+    fi
+    if is_num "$_pc_expiry"; then
+        debug_log "prompt cache: expiry=${_pc_expiry} tier=${prompt_cache_ttl:-fallback ${cfg_prompt_cache_ttl_seconds}}s"
+        if [ "$_pc_expiry" -le "$(date +%s)" ]; then
+            seg_prompt_cache="${ORANGE}${L_PROMPT_CACHE_EXPIRED}${RESET}"
+        else
+            _pc_clock=$(format_reset_marker "$_pc_expiry" clock)
+            [ -n "$_pc_clock" ] && seg_prompt_cache="$(muted "${L_PROMPT_CACHE} ${_pc_clock}")"
+        fi
+    fi
+fi
+
+# How many times this session's context has already been emptied. Hidden until
+# the first one, the same rule Calls and Eff follow: "Ctx 40%" on a session that
+# has compacted three times means something very different from the same figure
+# at the start, and only the pair says which one you are looking at.
+seg_compactions=""
+if [ "$cfg_show_compactions" = "1" ] && is_num "$compactions_count" && [ "$compactions_count" -gt 0 ]; then
+    seg_compactions="$(muted "${L_COMPACTIONS} ${compactions_count}")"
+fi
+
+# Output rate. A total that is still climbing looks the same whether generation
+# is fast or crawling; a rate is the reading that shows a degraded endpoint or a
+# throttled account while it is happening. The transcript pass emits nothing at
+# all when the interval it would divide by is not trustworthy.
+seg_speed=""
+if [ "$cfg_show_speed" = "1" ] && is_num "$speed_value"; then
+    seg_speed="$(muted "${L_SPEED} ${speed_value} ${L_TOKENS_PER_SECOND}")"
 fi
 
 seg_efficiency=""
@@ -2304,6 +2830,7 @@ fi
 
 segment_value() {
     case "$1" in
+        mode) printf '%s' "$seg_mode" ;;
         model) printf '%s' "$seg_model" ;;
         repo) printf '%s' "$seg_repo" ;;
         branch) printf '%s' "$seg_branch" ;;
@@ -2323,6 +2850,11 @@ segment_value() {
         cache_ratio) printf '%s' "$seg_cache_ratio" ;;
         efficiency) printf '%s' "$seg_efficiency" ;;
         tool_calls) printf '%s' "$seg_tool_calls" ;;
+        added_dirs) printf '%s' "$seg_added_dirs" ;;
+        prompt_cache) printf '%s' "$seg_prompt_cache" ;;
+        today) printf '%s' "$seg_today" ;;
+        compactions) printf '%s' "$seg_compactions" ;;
+        speed) printf '%s' "$seg_speed" ;;
         activity) printf '%s' "$seg_activity" ;;
         agents) printf '%s' "$seg_agents" ;;
         todos) printf '%s' "$seg_todos" ;;
@@ -2347,14 +2879,34 @@ out_lines=()
 [ -n "$subscription_warning_line" ] && out_lines+=("$subscription_warning_line")
 [ -n "$balance_warning_line" ] && out_lines+=("$balance_warning_line")
 
+# The right-aligned run starts at the first segment named in right_align that
+# actually renders on that line, marked with a \001 sentinel the width-aware
+# awk below turns into padding. A control byte is safe as a marker precisely
+# because sanitize_text strips control characters from every value that came
+# from outside this script, so none can appear inside a segment.
+RIGHT_ALIGN_MARK=$'\001'
+LINE_SEPARATOR=" ${C_MUTED}|${RESET} "
+
 IFS='|' read -ra _layout_line_specs <<< "$layout_spec"
 for _lspec in "${_layout_line_specs[@]}"; do
     _line=""
+    _right_started=0
     IFS=',' read -ra _seg_names <<< "$_lspec"
     for _sn in "${_seg_names[@]}"; do
         _sv=$(segment_value "$_sn")
-        [ -n "$_sv" ] || continue
-        [ -n "$_line" ] && _line+=" ${C_MUTED}|${RESET} "
+        if [ -z "$_sv" ]; then
+            debug_log "segment '${_sn}' empty (no value, or its display flag is off)"
+            continue
+        fi
+        if [ -n "$_line" ]; then
+            if [ "$_right_started" -eq 0 ] && [ -n "$cfg_right_align" ] \
+               && [[ ",${cfg_right_align}," == *",${_sn},"* ]]; then
+                _line+="$RIGHT_ALIGN_MARK"
+                _right_started=1
+            else
+                _line+="$LINE_SEPARATOR"
+            fi
+        fi
         _line+="$_sv"
     done
     [ -n "$_line" ] && out_lines+=("$_line")
@@ -2377,7 +2929,9 @@ if [ "${#out_lines[@]}" -gt 0 ]; then
         # glyphs count as width 1 and are never split mid-sequence. In
         # char-oriented gawk the table simply never matches, which is also
         # correct. ANSI escapes are copied through without counting.
-        printf '%s\n' "${out_lines[@]}" | awk -v max="$term_width" '
+        printf '%s\n' "${out_lines[@]}" | awk -v max="$term_width" \
+                                              -v mark="$RIGHT_ALIGN_MARK" \
+                                              -v fallback="$LINE_SEPARATOR" '
         BEGIN { for (b = 128; b < 192; b++) cont[sprintf("%c", b)] = 1 }
         function visible_width(s,    i, n, c, w, r) {
             n = length(s); i = 1; w = 0
@@ -2394,6 +2948,16 @@ if [ "${#out_lines[@]}" -gt 0 ]; then
         }
         {
             line = $0
+            cut = index(line, mark)
+            if (cut > 0) {
+                left = substr(line, 1, cut - 1)
+                right = substr(line, cut + 1)
+                # Stand down whenever there is no room to pad: pushing the line
+                # past the terminal edge makes it wrap and costs a whole row,
+                # which is strictly worse than the left-packed line it replaced.
+                pad = max - visible_width(left) - visible_width(right)
+                line = (pad >= 1) ? left sprintf("%" pad "s", "") right : left fallback right
+            }
             if (visible_width(line) <= max) { print line; next }
             out = ""; vis = 0; i = 1; n = length(line)
             while (i <= n) {
@@ -2413,7 +2977,10 @@ if [ "${#out_lines[@]}" -gt 0 ]; then
             print out "…\033[0m"
         }'
     else
-        printf '%s\n' "${out_lines[@]}"
+        # No known width, so right alignment stands down and the run falls back
+        # to an ordinary separator — the same guard the awk above applies.
+        debug_log "terminal width unknown; right_align stands down"
+        printf '%s\n' "${out_lines[@]//$RIGHT_ALIGN_MARK/$LINE_SEPARATOR}"
     fi
 fi
 

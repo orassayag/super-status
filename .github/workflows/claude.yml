@@ -1,0 +1,63 @@
+name: Claude
+
+# Mentioning @claude on an issue, a pull request, or a review comment puts
+# Claude to work on it — a first triage pass (which platform, which segment,
+# which code path) waiting for you when you get to the thread.
+#
+# THE GATE IS THE POINT. Left ungated, this fires on ANYONE's comment containing
+# "@claude", so on a public repository a stranger could spend the repository
+# owner's tokens at will, repeatedly. The author_association check below limits
+# it to people who can already write to the repository. Do not widen it.
+#
+# Inert until an ANTHROPIC_API_KEY repository secret exists: with no secret the
+# job fails its one step and nothing else happens. That is the intended default
+# — turn it on deliberately, and treat the key like any other secret (a token
+# leaked through workflow logs is its own incident).
+on:
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+  pull_request_review:
+    types: [submitted]
+  issues:
+    types: [opened, assigned]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+  id-token: write
+
+jobs:
+  claude:
+    # Two conditions, both required: "@claude" appears in the body, AND the
+    # person who wrote it can write to this repository.
+    if: |
+      (
+        (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude') &&
+          (github.event.comment.author_association == 'OWNER' ||
+           github.event.comment.author_association == 'MEMBER' ||
+           github.event.comment.author_association == 'COLLABORATOR')) ||
+        (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude') &&
+          (github.event.comment.author_association == 'OWNER' ||
+           github.event.comment.author_association == 'MEMBER' ||
+           github.event.comment.author_association == 'COLLABORATOR')) ||
+        (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude') &&
+          (github.event.review.author_association == 'OWNER' ||
+           github.event.review.author_association == 'MEMBER' ||
+           github.event.review.author_association == 'COLLABORATOR')) ||
+        (github.event_name == 'issues' && contains(github.event.issue.body, '@claude') &&
+          (github.event.issue.author_association == 'OWNER' ||
+           github.event.issue.author_association == 'MEMBER' ||
+           github.event.issue.author_association == 'COLLABORATOR'))
+      )
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
