@@ -1689,6 +1689,55 @@ if [ "$cfg_show_orchestrator" = "1" ] && [ -n "$git_root" ]; then
 fi
 
 # ---------------------------------------------------------------------------
+# Session line diff from git (10s cache per session + git root).
+# cost.total_lines_added/removed only counts this session's Edit/Write tools,
+# so edits made through Bash or by sub-agents never reach it. The first render
+# of a session snapshots the whole working tree (tracked + untracked, through a
+# throwaway index so the real one is never touched) as a tree object; every
+# later render diffs a fresh snapshot against it. Commits made mid-session do
+# not reset the count, and pre-existing uncommitted changes are not counted.
+# ---------------------------------------------------------------------------
+git_session_added=""; git_session_removed=""
+
+snapshot_worktree_tree() { # $1 = git root; prints a tree SHA
+    local _root="$1" _real_index _tmp_index _tree
+    _real_index=$(git_run -C "$_root" rev-parse --path-format=absolute --git-path index) || return 1
+    _tmp_index=$(mktemp "$CACHE_ROOT/index.XXXXXX") || return 1
+    [ -f "$_real_index" ] && cp "$_real_index" "$_tmp_index"
+    GIT_INDEX_FILE="$_tmp_index" git_run -C "$_root" add -A \
+        && _tree=$(GIT_INDEX_FILE="$_tmp_index" git_run -C "$_root" write-tree)
+    rm -f "$_tmp_index" "$_tmp_index.lock"
+    [ -n "$_tree" ] && printf '%s' "$_tree"
+}
+
+if [ "$cfg_show_lines_changed" = "1" ] && [ -z "$JJ_ROOT" ] && [ -n "$session_id" ] \
+    && [ "$(git_run -C "$git_root" rev-parse --is-inside-work-tree)" = "true" ]; then
+    _sd_dir="$CACHE_ROOT/session-diff"
+    mkdir -p "$_sd_dir"
+    _sd_key="$(printf '%s' "$session_id" | tr -c 'A-Za-z0-9_-' '_')_$(echo "$git_root" | tr '/' '_')"
+    _sd_base="$_sd_dir/${_sd_key}.base"
+    _sd_stat="$_sd_dir/${_sd_key}.stat"
+    if [ ! -s "$_sd_base" ]; then
+        find "$_sd_dir" -type f -mtime +7 -delete 2>/dev/null
+        snapshot_worktree_tree "$git_root" > "$_sd_base" || rm -f "$_sd_base"
+        printf '0 0' > "$_sd_stat"
+    fi
+    _sd_do=1
+    if [ -f "$_sd_stat" ]; then
+        _sd_age=$(( $(date +%s) - $(file_mtime "$_sd_stat") ))
+        [ "$_sd_age" -lt 10 ] && _sd_do=0
+    fi
+    if [ "$_sd_do" -eq 1 ] && [ -s "$_sd_base" ]; then
+        _sd_now=$(snapshot_worktree_tree "$git_root")
+        if [ -n "$_sd_now" ]; then
+            git_run -C "$git_root" diff --numstat --no-renames "$(cat "$_sd_base")" "$_sd_now" \
+                | awk '$1 ~ /^[0-9]+$/ {a+=$1; r+=$2} END {printf "%d %d", a, r}' > "$_sd_stat"
+        fi
+    fi
+    read -r git_session_added git_session_removed < "$_sd_stat" 2>/dev/null
+fi
+
+# ---------------------------------------------------------------------------
 # Context window % + bar + tokens
 # ---------------------------------------------------------------------------
 pct="$sv_used_pct"
@@ -2333,14 +2382,16 @@ else
     seg_worktree="$_worktree_part"
 fi
 
-# Straight from Claude Code's own cost.total_lines_added/removed — this only
-# reflects edits made by this session's own tools (not sub-agents or nested
-# repos), but it's what Claude Code itself reports, so it's never stale.
+# Each side is the larger of Claude Code's own counter (which also sees edits
+# outside the git root) and the git session diff (which also sees Bash and
+# sub-agent edits). Always rendered, +0 -0 included, so its absence never has
+# to be interpreted.
 seg_lines_changed=""
 if [ "$cfg_show_lines_changed" = "1" ]; then
-    if [ "$la" -gt 0 ] || [ "$lr" -gt 0 ]; then
-        seg_lines_changed="${GREEN}+${la}${RESET} ${RED}-${lr}${RESET}"
-    fi
+    la_shown=$la; lr_shown=$lr
+    is_num "$git_session_added" && [ "$git_session_added" -gt "$la_shown" ] && la_shown=$git_session_added
+    is_num "$git_session_removed" && [ "$git_session_removed" -gt "$lr_shown" ] && lr_shown=$git_session_removed
+    seg_lines_changed="${GREEN}+${la_shown}${RESET} ${RED}-${lr_shown}${RESET}"
 fi
 
 seg_agent=""
