@@ -1016,3 +1016,22 @@ epoch_days_ago() { date -v-"$1"d +%s 2>/dev/null || date -d "$1 days ago" +%s; }
     } > "$proj/a/session.jsonl"
     [ "$(local_spend_usd "$(epoch_days_ago 3)" "$proj")" = "75.0000" ]
 }
+
+@test "lines changed counts Bash and sub-agent edits via git, and shows +0 -0 at rest" {
+    repo="$BATS_TEST_TMPDIR/repo"
+    mkdir -p "$repo"
+    git -C "$repo" init -q
+    printf 'a\nb\n' > "$repo/f"
+    git -C "$repo" add f
+    git -C "$repo" -c user.email=t@t -c user.name=t commit -qm init
+    printf 'pre-existing\n' >> "$repo/f"
+    payload='{"model":{"display_name":"Opus"},"session_id":"bats-git-diff","cwd":"'"$repo"'","workspace":{"project_dir":"'"$repo"'","current_dir":"'"$repo"'"},"context_window":{"used_percentage":25}}'
+    run_statusline "$payload"
+    [[ "$(strip_ansi "$output")" == *"+0 -0"* ]]
+    printf 'x\ny\nz\n' > "$repo/new.txt"
+    printf 'A\nb\npre-existing\n' > "$repo/f"
+    touch -t 202001010000 "$XDG_CACHE_HOME"/super-status/session-diff/*.stat
+    run_statusline "$payload"
+    [[ "$(strip_ansi "$output")" == *"+4 -1"* ]]
+    [ "$(git -C "$repo" status --porcelain)" = "$(printf ' M f\n?? new.txt')" ]
+}
