@@ -16,9 +16,15 @@ export LC_NUMERIC=C
 # Under Git Bash/Cygwin, jq and python3 are usually native Windows binaries:
 # their text-mode stdout turns every \n into \r\n, and Python's stdio defaults
 # to cp1252. A stray \r on each value breaks every numeric check and match.
+# Without a UTF-8 locale, bash measures and slices strings in bytes and cuts
+# multi-byte glyphs in half.
 case "${OSTYPE:-}" in
     msys*|cygwin*)
         export PYTHONUTF8=1
+        case "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" in
+            *[Uu][Tt][Ff]-8*|*[Uu][Tt][Ff]8*) ;;
+            *) export LC_CTYPE=C.UTF-8 ;;
+        esac
         jq() { command jq "$@" | tr -d '\r'; return "${PIPESTATUS[0]}"; }
         python3() { command python3 "$@" | tr -d '\r'; return "${PIPESTATUS[0]}"; }
         ;;
