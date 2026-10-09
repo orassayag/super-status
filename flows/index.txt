@@ -1,4 +1,3 @@
-# flow-compare target repos — one repo URL or local path per line.
+# /maintenance target repos — one repo URL or local path per line.
 # Blank lines and lines starting with # are ignored.
-# Add repos to compare super-status against, then run /flow-compare.
 https://github.com/jarrodwatts/claude-hud

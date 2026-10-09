@@ -2,5 +2,6 @@
   "projectName": "super-status",
   "projectKind": "cc-statusline-tool",
   "contract": "generic",
+  "boilerplateAudit": false,
   "relevance": "statusline rendering features, config surface, platform support, install/onboarding UX, and the scripts/plugins that make the statusline work; ignore app-domain code unrelated to the statusline product."
 }
