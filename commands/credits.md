@@ -50,7 +50,7 @@ else
   AS_OF=$(date +"%d/%m/%Y %H:%M")
 fi
 
-CONFIG="$HOME/.claude/super-status/config.json"
+CONFIG="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/super-status/config.json"
 mkdir -p "$(dirname "$CONFIG")"
 [ -f "$CONFIG" ] || echo '{}' > "$CONFIG"
 

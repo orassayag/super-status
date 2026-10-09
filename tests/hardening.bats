@@ -10,7 +10,7 @@ setup() {
     export HOME="$BATS_TEST_TMPDIR/home"
     export XDG_CACHE_HOME="$BATS_TEST_TMPDIR/cache"
     mkdir -p "$HOME/.claude/super-status"
-    unset SUPER_STATUS_DISABLE SUPER_STATUS_CONFIG SUPER_STATUS_DEBUG \
+    unset SUPER_STATUS_DISABLE SUPER_STATUS_CONFIG SUPER_STATUS_DEBUG CLAUDE_CONFIG_DIR \
           ANTHROPIC_BASE_URL OPENROUTER_API_KEY ANTHROPIC_ADMIN_KEY COLUMNS
     # shellcheck disable=SC1090
     source "$SCRIPT"
@@ -457,4 +457,115 @@ PY
     write_config '{"display":{"activity":true},"hyperlinks":true}'
     run_statusline "$payload"
     [[ "$output" == *"file:///tmp/evIL.ts"* ]]
+}
+
+# --- prompt cache from stdin ------------------------------------------------
+
+@test "a stdin prompt_cache expiry outranks the transcript estimate" {
+    transcript="$BATS_TEST_TMPDIR/pc-stdin.jsonl"
+    write_hostile_transcript "$transcript"
+    write_config '{"display":{"prompt_cache":true}}'
+    expires=$(( $(date +%s) + 1800 ))
+    run_statusline "{\"model\":{\"display_name\":\"Opus\"},\"session_id\":\"pcs\",\"transcript_path\":\"$transcript\",\"workspace\":{\"project_dir\":\"/a/b\"},\"prompt_cache\":{\"warm\":true,\"expires_at\":$expires}}"
+    plain=$(strip_ansi "$output")
+    [[ "$plain" == *"⏱ until $(date -r "$expires" +%H:%M 2>/dev/null || date -d "@$expires" +%H:%M)"* ]]
+    [[ "$plain" != *"expired"* ]]
+}
+
+@test "without a stdin prompt_cache the transcript estimate still renders" {
+    transcript="$BATS_TEST_TMPDIR/pc-nostdin.jsonl"
+    write_hostile_transcript "$transcript"
+    write_config '{"display":{"prompt_cache":true}}'
+    run_statusline "{\"model\":{\"display_name\":\"Opus\"},\"session_id\":\"pcn\",\"transcript_path\":\"$transcript\",\"workspace\":{\"project_dir\":\"/a/b\"}}"
+    [[ "$(strip_ansi "$output")" == *"expired"* ]]
+}
+
+@test "stdin warm:true vetoes an estimated expired" {
+    transcript="$BATS_TEST_TMPDIR/pc-warm.jsonl"
+    write_hostile_transcript "$transcript"
+    write_config '{"display":{"prompt_cache":true}}'
+    run_statusline "{\"model\":{\"display_name\":\"Opus\"},\"session_id\":\"pcw\",\"transcript_path\":\"$transcript\",\"workspace\":{\"project_dir\":\"/a/b\"},\"prompt_cache\":{\"warm\":true}}"
+    [[ "$(strip_ansi "$output")" != *"expired"* ]]
+}
+
+@test "an ISO-8601 prompt_cache expiry is accepted" {
+    write_config '{"display":{"prompt_cache":true}}'
+    run_statusline '{"model":{"display_name":"Opus"},"workspace":{"project_dir":"/a/b"},"prompt_cache":{"expires_at":"2020-01-01T00:00:00.000Z"}}'
+    [[ "$(strip_ansi "$output")" == *"⏱ expired"* ]]
+}
+
+@test "a stdin hit_ratio fraction drives the cache ratio" {
+    run_statusline '{"model":{"display_name":"Opus"},"workspace":{"project_dir":"/a/b"},"prompt_cache":{"hit_ratio":0.87}}'
+    [[ "$(strip_ansi "$output")" == *"Cache 87%"* ]]
+}
+
+# --- weekly spend -----------------------------------------------------------
+
+@test "week sums the day ledger back to the day the weekly window opened" {
+    write_config '{"display":{"week":true}}'
+    ledger_dir="$XDG_CACHE_HOME/super-status/daily-cost"
+    mkdir -p "$ledger_dir"
+    now=$(date +%s)
+    in_window=$(date -r $(( now - 86400 * 2 )) +%Y-%m-%d 2>/dev/null || date -d "@$(( now - 86400 * 2 ))" +%Y-%m-%d)
+    before_window=$(date -r $(( now - 86400 * 6 )) +%Y-%m-%d 2>/dev/null || date -d "@$(( now - 86400 * 6 ))" +%Y-%m-%d)
+    printf 'old\t1\t4\t%s\n' "$now" > "$ledger_dir/$in_window.tsv"
+    printf 'older\t0\t50\t%s\n' "$now" > "$ledger_dir/$before_window.tsv"
+    # The weekly window resets in three days, so it opened four days ago.
+    run_statusline "{\"model\":{\"display_name\":\"Opus\"},\"session_id\":\"wk\",\"workspace\":{\"project_dir\":\"/a/b\"},\"cost\":{\"total_cost_usd\":2},\"rate_limits\":{\"five_hour\":{\"used_percentage\":1,\"resets_at\":$(( now + 3600 ))},\"seven_day\":{\"used_percentage\":1,\"resets_at\":$(( now + 86400 * 3 ))}}}"
+    plain=$(strip_ansi "$output")
+    [[ "$plain" == *'Week $3.00'* ]]
+    [[ "$plain" != *'Today'* ]]
+}
+
+# --- session name -----------------------------------------------------------
+
+@test "session_name renders sanitized when enabled and not otherwise" {
+    payload='{"model":{"display_name":"Opus"},"workspace":{"project_dir":"/a/b"},"session_name":"fix-auth\u001b[31m"}'
+    run_statusline "$payload"
+    [[ "$(strip_ansi "$output")" != *"fix-auth"* ]]
+    write_config '{"display":{"session_name":true}}'
+    run_statusline "$payload"
+    [[ "$output" != *$'\033[31m'* ]]
+    [[ "$(strip_ansi "$output")" == *"“fix-auth"* ]]
+}
+
+# --- usage pace and spend limit ---------------------------------------------
+
+@test "usage_pace_pct projects usage over the elapsed share of the window" {
+    # 40% used with 2h of a 5h window gone: 40 * 5 / 2 = 100.
+    [ "$(usage_pace_pct 40 $(( 1000 + 10800 )) 18000 1000)" = "100" ]
+    # Below 10% used there is no projection.
+    [ -z "$(usage_pace_pct 9 $(( 1000 + 10800 )) 18000 1000)" ]
+    [ -z "$(pace_color 80)" ]
+    [ "$(pace_color 95)" = "$ORANGE" ]
+    [ "$(pace_color 101)" = "$RED" ]
+}
+
+@test "usage_pace marks a 5h bar on track to run out, only when enabled" {
+    now=$(date +%s)
+    payload="{\"model\":{\"display_name\":\"Opus\"},\"workspace\":{\"project_dir\":\"/a/b\"},\"rate_limits\":{\"five_hour\":{\"used_percentage\":40,\"resets_at\":$(( now + 10800 ))},\"seven_day\":{\"used_percentage\":1,\"resets_at\":$(( now + 500000 ))}}}"
+    run_statusline "$payload"
+    [[ "$(strip_ansi "$output")" != *"▲"* ]]
+    write_config '{"display":{"usage_pace":true}}'
+    run_statusline "$payload"
+    [[ "$(strip_ansi "$output")" == *"40% ▲"* ]]
+}
+
+@test "a spend_limit window renders a third Sessions bar only when sent" {
+    now=$(date +%s)
+    limits="\"five_hour\":{\"used_percentage\":10,\"resets_at\":$(( now + 3600 ))},\"seven_day\":{\"used_percentage\":10,\"resets_at\":$(( now + 500000 ))}"
+    run_statusline "{\"model\":{\"display_name\":\"Opus\"},\"workspace\":{\"project_dir\":\"/a/b\"},\"rate_limits\":{$limits}}"
+    [[ "$(strip_ansi "$output")" != *"Spend"* ]]
+    run_statusline "{\"model\":{\"display_name\":\"Opus\"},\"workspace\":{\"project_dir\":\"/a/b\"},\"rate_limits\":{$limits,\"spend_limit\":{\"used_percentage\":33,\"resets_at\":$(( now + 900000 ))}}}"
+    [[ "$(strip_ansi "$output")" == *"Spend ▮▮▮▪▪▪▪▪▪▪ 33%"* ]]
+}
+
+# --- CLAUDE_CONFIG_DIR ------------------------------------------------------
+
+@test "config.json is read from CLAUDE_CONFIG_DIR when it is set" {
+    export CLAUDE_CONFIG_DIR="$BATS_TEST_TMPDIR/relocated"
+    mkdir -p "$CLAUDE_CONFIG_DIR/super-status"
+    printf '{"display":{"session_name":true}}' > "$CLAUDE_CONFIG_DIR/super-status/config.json"
+    run_statusline '{"model":{"display_name":"Opus"},"workspace":{"project_dir":"/a/b"},"session_name":"moved"}'
+    [[ "$(strip_ansi "$output")" == *"“moved”"* ]]
 }

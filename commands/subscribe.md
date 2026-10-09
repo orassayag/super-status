@@ -29,7 +29,7 @@ KEY_RE='"subscription_start_date"[[:space:]]*:[[:space:]]*"[^"]*"'
 updated=""
 old=""
 # Match statusline.sh's resolution order: project-local CLAUDE.md, then global.
-for f in "./CLAUDE.md" "$HOME/.claude/CLAUDE.md"; do
+for f in "./CLAUDE.md" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/CLAUDE.md"; do
   [ -f "$f" ] || continue
   if grep -Eq "$KEY_RE" "$f"; then
     old=$(grep -Eo "$KEY_RE" "$f" | head -n1 | sed -E 's#.*"([^"]*)"$#\1#')
@@ -41,7 +41,7 @@ for f in "./CLAUDE.md" "$HOME/.claude/CLAUDE.md"; do
 done
 
 if [ -z "$updated" ]; then
-  target="$HOME/.claude/CLAUDE.md"
+  target="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/CLAUDE.md"
   printf '\n"subscription_start_date": "%s"\n' "$NEW_DATE" >> "$target"
   updated="$target"
   echo "No existing subscription_start_date found — added it."

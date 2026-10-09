@@ -9,11 +9,11 @@ so no one has to hand-edit JSON to turn a line on or pick a preset.
 
 ## 1. Read the current config
 
-The config path is `${SUPER_STATUS_CONFIG:-$HOME/.claude/super-status/config.json}`.
+The config path is `${SUPER_STATUS_CONFIG:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/super-status/config.json}`.
 With the Bash tool, print the current config (or note that none exists yet):
 
 ```bash
-CFG="${SUPER_STATUS_CONFIG:-$HOME/.claude/super-status/config.json}"
+CFG="${SUPER_STATUS_CONFIG:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/super-status/config.json}"
 if [ -f "$CFG" ]; then echo "--- current ($CFG) ---"; cat "$CFG"; else echo "no config yet: $CFG"; fi
 ```
 
@@ -50,7 +50,7 @@ when the user picked one explicitly. Write to a temp file first, validate it
 parses, and show it to the user as the **preview** before saving:
 
 ```bash
-CFG="${SUPER_STATUS_CONFIG:-$HOME/.claude/super-status/config.json}"
+CFG="${SUPER_STATUS_CONFIG:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/super-status/config.json}"
 DIR=$(dirname "$CFG"); mkdir -p "$DIR"
 BASE="{}"; [ -f "$CFG" ] && BASE=$(cat "$CFG")
 # Fill these from the answers:

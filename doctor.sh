@@ -5,9 +5,10 @@
 
 set -e
 
-SCRIPT_PATH="$HOME/.claude/super-status/statusline.sh"
-SETTINGS="$HOME/.claude/settings.json"
-CONFIG_FILE="$HOME/.claude/super-status/config.json"
+CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+SCRIPT_PATH="$CLAUDE_DIR/super-status/statusline.sh"
+SETTINGS="$CLAUDE_DIR/settings.json"
+CONFIG_FILE="$CLAUDE_DIR/super-status/config.json"
 CACHE_ROOT="${XDG_CACHE_HOME:-$HOME/.cache}/super-status"
 EXPECTED_CMD="/bin/bash ${SCRIPT_PATH}"
 
@@ -56,7 +57,7 @@ fi
 
 if [ ! -f "$SETTINGS" ]; then
     echo "settings.json not found — creating it."
-    mkdir -p "$HOME/.claude"
+    mkdir -p "$CLAUDE_DIR"
     echo '{}' > "$SETTINGS"
 fi
 
@@ -78,13 +79,16 @@ fi
 cp "$SETTINGS" "${SETTINGS}.bak.$(date +%s)"
 echo "Backed up existing settings.json before patching."
 
+# Written back with `cat >` rather than `mv`: a settings.json that is a symlink
+# (a dotfiles repo) stays a link, and the file keeps its own permissions.
 # An existing refreshInterval is preserved; 2s is the recommended default.
 tmp=$(mktemp)
 jq --arg cmd "$EXPECTED_CMD" \
    '.statusLine = {"type": "command", "command": $cmd, "refreshInterval": (.statusLine.refreshInterval // 2)}' \
-   "$SETTINGS" > "$tmp" && mv "$tmp" "$SETTINGS"
+   "$SETTINGS" > "$tmp" && cat "$tmp" > "$SETTINGS"
+rm -f "$tmp"
 
-echo "✓ Re-patched statusLine in Claude Code settings.json to point at super-status."
+echo "✓ Re-patched statusLine in $SETTINGS to point at super-status."
 echo "  Restart Claude Code for the change to take effect."
 
 # Antigravity CLI statusLine check
@@ -99,7 +103,9 @@ if [ -d "$AGY_DIR" ] || [ -f "$AGY_SETTINGS" ] || command -v agy >/dev/null 2>&1
     else
         cp "$AGY_SETTINGS" "${AGY_SETTINGS}.bak.$(date +%s)"
         tmp=$(mktemp)
-        jq --arg cmd "$EXPECTED_CMD"            '.statusLine = {"command": $cmd, "enabled": true}'            "$AGY_SETTINGS" > "$tmp" && mv "$tmp" "$AGY_SETTINGS"
+        jq --arg cmd "$EXPECTED_CMD" '.statusLine = {"command": $cmd, "enabled": true}' \
+            "$AGY_SETTINGS" > "$tmp" && cat "$tmp" > "$AGY_SETTINGS"
+        rm -f "$tmp"
         echo "✓ Patched statusLine in Antigravity CLI settings.json."
     fi
 fi

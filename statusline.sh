@@ -160,6 +160,9 @@ cfg_show_orchestrator=0
 cfg_show_added_dirs=0
 cfg_show_prompt_cache=0
 cfg_show_today=0
+cfg_show_week=0
+cfg_show_session_name=0
+cfg_show_usage_pace=0
 cfg_show_compactions=0
 cfg_show_speed=0
 
@@ -185,8 +188,8 @@ cfg_color_bar_empty=""
 # Layout presets: lines separated by "|", segments within a line by ",".
 # A custom "lines" array in config.json overrides either preset, which is how
 # element reordering and merging elements onto shared lines is expressed.
-LAYOUT_EXPANDED="mode,model,agent,repo,branch,worktree,lines_changed,version|added_dirs|subscription,sessions,balance|context,cache_ratio,prompt_cache,cost,today,total_tokens|loc,session_time,thinking_time,speed,efficiency,tool_calls,compactions|activity|agents|todos|orchestrator"
-LAYOUT_COMPACT="mode,model,agent,repo,branch,worktree,added_dirs,context|subscription,sessions,balance,cost,today|activity,agents,todos,orchestrator"
+LAYOUT_EXPANDED="mode,model,agent,repo,branch,worktree,lines_changed,version,session_name|added_dirs|subscription,sessions,balance|context,cache_ratio,prompt_cache,cost,today,week,total_tokens|loc,session_time,thinking_time,speed,efficiency,tool_calls,compactions|activity|agents|todos|orchestrator"
+LAYOUT_COMPACT="mode,model,agent,repo,branch,worktree,added_dirs,context|subscription,sessions,balance,cost,today,week|activity,agents,todos,orchestrator"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -419,6 +422,25 @@ usage_color() {
     if [ "$u" -ge 100 ] || [ "$u" -ge "$crit" ]; then printf '%s' "$RED"
     elif [ "$u" -ge "$warn" ]; then printf '%s' "$ORANGE"
     else printf '%s' "$GREEN"
+    fi
+}
+
+# Projected end-of-window usage as a percent: usage so far scaled to the whole
+# window by the share of it already elapsed. Prints nothing below 10% used,
+# where one early burst would project as a runaway.
+usage_pace_pct() { # $1 used pct, $2 reset epoch, $3 window seconds, $4 now (optional)
+    local used="${1%.*}" reset="${2%.*}" window="$3" now="${4:-$(date +%s)}" elapsed
+    { is_num "$used" && is_num "$reset" && [ "$used" -ge 10 ]; } || return 0
+    elapsed=$(( window - (reset - now) ))
+    { [ "$elapsed" -gt 0 ] && [ "$elapsed" -le "$window" ]; } || return 0
+    printf '%s' $(( used * window / elapsed ))
+}
+
+# Warning color for a projected usage: red past 100%, amber from 90%.
+pace_color() {
+    is_num "$1" || return 0
+    if [ "$1" -gt 100 ]; then printf '%s' "$RED"
+    elif [ "$1" -ge 90 ]; then printf '%s' "$ORANGE"
     fi
 }
 
@@ -926,12 +948,14 @@ if [ ! -d "$CACHE_ROOT" ]; then
     chmod 700 "$CACHE_ROOT" 2>/dev/null
 fi
 
+CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+
 # ---------------------------------------------------------------------------
 # Config load — one jq call over config.json emits key<TAB>value rows for a
 # fixed key set; unknown keys are ignored, absent keys keep their defaults.
 # "preset" is emitted first so explicit per-key values always override it.
 # ---------------------------------------------------------------------------
-CONFIG_FILE="${SUPER_STATUS_CONFIG:-$HOME/.claude/super-status/config.json}"
+CONFIG_FILE="${SUPER_STATUS_CONFIG:-$CLAUDE_DIR/super-status/config.json}"
 CONFIG_MAX_BYTES=262144
 config_warning_line=""
 
@@ -940,7 +964,7 @@ apply_preset() {
     case "$1" in
         full)
             for _v in git_dirty git_ahead_behind git_file_stats activity agents todos orchestrator \
-                      added_dirs prompt_cache today compactions speed; do
+                      added_dirs prompt_cache today week session_name usage_pace compactions speed; do
                 printf -v "cfg_show_${_v}" '%s' 1
             done
             ;;
@@ -958,7 +982,7 @@ apply_preset() {
                       git_file_stats provider mode subscription cost total_tokens loc \
                       session_time thinking_time cache_ratio efficiency tool_calls \
                       activity agents todos orchestrator added_dirs prompt_cache \
-                      today compactions speed; do
+                      today week session_name usage_pace compactions speed; do
                 printf -v "cfg_show_${_v}" '%s' 0
             done
             cfg_layout="compact"
@@ -1060,7 +1084,7 @@ if [ -f "$CONFIG_FILE" ]; then
                 display_*)
                     _b=$(to_bool "$_v") || continue
                     case "${_k#display_}" in
-                        model|mode|repo|branch|worktree|lines_changed|version|git_dirty|git_ahead_behind|git_file_stats|provider|effort|subscription|sessions|balance|context|cost|total_tokens|loc|session_time|thinking_time|cache_ratio|efficiency|tool_calls|activity|agents|todos|orchestrator|added_dirs|prompt_cache|today|compactions|speed)
+                        model|mode|repo|branch|worktree|lines_changed|version|git_dirty|git_ahead_behind|git_file_stats|provider|effort|subscription|sessions|balance|context|cost|total_tokens|loc|session_time|thinking_time|cache_ratio|efficiency|tool_calls|activity|agents|todos|orchestrator|added_dirs|prompt_cache|today|week|session_name|usage_pace|compactions|speed)
                             printf -v "cfg_show_${_k#display_}" '%s' "$_b" ;;
                     esac
                     ;;
@@ -1132,6 +1156,9 @@ case "$cfg_language" in
         L_PROMPT_CACHE="⏱ until"
         L_PROMPT_CACHE_EXPIRED="⏱ expired"
         L_TODAY="Today"
+        L_WEEK="Week"
+        L_SPEND_LIMIT="Spend"
+        L_PACE="▲"
         L_COMPACTIONS="Compactions:"
         L_SPEED="out:"
         L_TOKENS_PER_SECOND="tok/s"
@@ -1165,6 +1192,8 @@ sv_cur_in=""; sv_cur_cc=""; sv_cur_cr=""
 api_ms=""; dur_ms=""; cost_usd=""; lines_added=""; lines_removed=""
 five_util_probe=""; five_reset=""; seven_util_probe=""; seven_reset=""
 is_agy_marker=""
+session_name=""; stdin_pc_expires=""; stdin_pc_ttl=""; stdin_pc_hit=""; stdin_pc_warm=""
+spend_util_probe=""; spend_reset=""
 added_dirs=()
 
 while IFS=$'	' read -r _k _v; do
@@ -1196,10 +1225,25 @@ while IFS=$'	' read -r _k _v; do
         seven_pct) seven_util_probe="$_v" ;;
         seven_reset) seven_reset="$_v" ;;
         is_agy) is_agy_marker="$_v" ;;
+        session_name) session_name="$_v" ;;
+        pc_expires) stdin_pc_expires="$_v" ;;
+        pc_ttl) stdin_pc_ttl="$_v" ;;
+        pc_hit) stdin_pc_hit="$_v" ;;
+        pc_warm) stdin_pc_warm="$_v" ;;
+        spend_pct) spend_util_probe="$_v" ;;
+        spend_reset) spend_reset="$_v" ;;
         added_dir) [ -n "$_v" ] && added_dirs+=("$_v") ;;
     esac
 done <<< "$(jq -r '
     def s(v): if v == null then "" else (v | tostring) end;
+    # The prompt_cache field is new and undocumented: accept epoch seconds or
+    # milliseconds, as a number or a string, or an ISO-8601 timestamp.
+    def epoch:
+      (if type == "number" then .
+       elif type == "string" and test("^[0-9]+([.][0-9]+)?$") then tonumber
+       elif type == "string" then (try (sub("[.][0-9]+"; "") | sub("[+]00:00$"; "Z") | fromdateiso8601) catch null)
+       else null end)
+      | if . == null then null elif . > 1e12 then (. / 1000 | floor) else floor end;
     ([
       ["model", s(.model.display_name // .model.name // .model.id // .model)],
       ["effort_level", s(.effort.level)],
@@ -1227,6 +1271,13 @@ done <<< "$(jq -r '
       ["five_reset", s(.rate_limits.five_hour.resets_at)],
       ["seven_pct", s(.rate_limits.seven_day.used_percentage)],
       ["seven_reset", s(.rate_limits.seven_day.resets_at)],
+      ["spend_pct", s(.rate_limits.spend_limit.used_percentage)],
+      ["spend_reset", s(.rate_limits.spend_limit.resets_at)],
+      ["session_name", s(.session_name)],
+      ["pc_expires", s(.prompt_cache.expires_at | epoch)],
+      ["pc_ttl", s(.prompt_cache.ttl)],
+      ["pc_hit", s(.prompt_cache.hit_ratio)],
+      ["pc_warm", s(.prompt_cache.warm)],
       ["is_agy", s(if .vcsName != null or .agent_state != null or (.model.id != null and (.model.id | test("gemini"; "i"))) then 1 else 0 end)]
     ]
     + ((.workspace.added_dirs // .workspace.additional_directories // [])
@@ -1242,6 +1293,7 @@ effort_level=$(sanitize_text "$effort_level")
 worktree=$(sanitize_text "$worktree")
 agent_name=$(sanitize_text "$agent_name")
 cc_version=$(sanitize_text "$cc_version")
+session_name=$(sanitize_text "$session_name")
 
 # Platform detection: Claude Code vs. Google Antigravity CLI (agy)
 IS_ANTIGRAVITY=0
@@ -1495,12 +1547,15 @@ ACCOUNT_MODE=""
 ACCOUNT_MODE_KIND=""
 
 resolve_account_mode() {
-    local _billing="" _seat=""
-    if [ -f "$HOME/.claude.json" ]; then
+    local _billing="" _seat="" _claude_json="$HOME/.claude.json"
+    # A relocated config folder keeps its own .claude.json.
+    [ -n "$CLAUDE_CONFIG_DIR" ] && [ -f "$CLAUDE_CONFIG_DIR/.claude.json" ] && \
+        _claude_json="$CLAUDE_CONFIG_DIR/.claude.json"
+    if [ -f "$_claude_json" ]; then
         IFS=$'\t' read -r _billing _seat <<< "$(jq -r '
             def s(v): if v == null then "" else (v | tostring) end;
             [s(.oauthAccount.billingType), s(.oauthAccount.seatTier)] | @tsv' \
-            "$HOME/.claude.json" 2>/dev/null)"
+            "$_claude_json" 2>/dev/null)"
     fi
     case "$_billing" in
         prepaid|invoice) ACCOUNT_MODE_KIND="api" ;;
@@ -1594,7 +1649,7 @@ fi
 # vs. upstream, and modified/staged/untracked file counts.
 # ---------------------------------------------------------------------------
 git_dirty=""; git_ahead=""; git_behind=""
-git_staged=""; git_modified=""; git_untracked=""
+git_staged=""; git_modified=""; git_untracked=""; git_conflicted=""
 # jj already answered the dirty question in its own pass, and has no upstream
 # ahead/behind or staging area to report — so git is not consulted at all for a
 # repository jj has taken over.
@@ -1612,13 +1667,14 @@ elif [ -n "$git_branch" ] && { [ "$cfg_show_git_dirty" = "1" ] || [ "$cfg_show_g
         [ "$_gs_age" -lt 10 ] && _gs_do=0
     fi
     if [ "$_gs_do" -eq 1 ]; then
-        _d=0; _st=0; _mo=0; _un=0; _ah=""; _bh=""
+        _d=0; _st=0; _mo=0; _un=0; _cf=0; _ah=""; _bh=""
         if [ "$cfg_show_git_file_stats" = "1" ]; then
             while IFS= read -r _pline; do
                 [ -n "$_pline" ] || continue
                 _d=1
                 case "${_pline:0:2}" in
                     '??') _un=$(( _un + 1 )) ;;
+                    DD|AU|UD|UA|DU|AA|UU) _cf=$(( _cf + 1 )) ;;
                     *)
                         case "${_pline:0:1}" in [MADRC]) _st=$(( _st + 1 )) ;; esac
                         case "${_pline:1:1}" in [MD]) _mo=$(( _mo + 1 )) ;; esac
@@ -1633,10 +1689,10 @@ elif [ -n "$git_branch" ] && { [ "$cfg_show_git_dirty" = "1" ] || [ "$cfg_show_g
         if [ "$cfg_show_git_ahead_behind" = "1" ]; then
             read -r _bh _ah <<< "$(git_run -C "$git_root" rev-list --left-right --count '@{upstream}...HEAD')"
         fi
-        echo "$_d ${_ah:--} ${_bh:--} $_st $_mo $_un" > "$_gs_file"
+        echo "$_d ${_ah:--} ${_bh:--} $_st $_mo $_un $_cf" > "$_gs_file"
         touch "$_gs_stamp"
     fi
-    read -r git_dirty git_ahead git_behind git_staged git_modified git_untracked < "$_gs_file" 2>/dev/null
+    read -r git_dirty git_ahead git_behind git_staged git_modified git_untracked git_conflicted < "$_gs_file" 2>/dev/null
     [ "$git_ahead" = "-" ] && git_ahead=""
     [ "$git_behind" = "-" ] && git_behind=""
 fi
@@ -2266,7 +2322,7 @@ SUBSCRIPTION_START_RAW=""
 
 resolve_subscription_start_date() {
     local _file _raw
-    for _file in "${git_root:+$git_root/CLAUDE.md}" "$HOME/.claude/CLAUDE.md"; do
+    for _file in "${git_root:+$git_root/CLAUDE.md}" "$CLAUDE_DIR/CLAUDE.md"; do
         { [ -n "$_file" ] && [ -f "$_file" ]; } || continue
         _raw=$(grep -o '"subscription_start_date"[[:space:]]*:[[:space:]]*"[^"]*"' "$_file" 2>/dev/null | head -n1)
         [ -z "$_raw" ] && continue
@@ -2376,6 +2432,8 @@ if [ "$cfg_show_branch" = "1" ] && [ -n "$git_branch" ]; then
         is_num "$git_staged" && [ "$git_staged" -gt 0 ] && _stats="${_stats}${_stats:+ }+${git_staged}"
         is_num "$git_untracked" && [ "$git_untracked" -gt 0 ] && _stats="${_stats}${_stats:+ }?${git_untracked}"
         [ -n "$_stats" ] && _branch_part="${_branch_part} $(muted "${_stats}")"
+        is_num "$git_conflicted" && [ "$git_conflicted" -gt 0 ] && \
+            _branch_part="${_branch_part} ${RED}=${git_conflicted}${RESET}"
     fi
 fi
 
@@ -2431,6 +2489,13 @@ if [ "$cfg_show_version" = "1" ] && [ -n "$cc_version" ]; then
     fi
 fi
 
+seg_session_name=""
+if [ "$cfg_show_session_name" = "1" ] && [ -n "$session_name" ]; then
+    [ "${#session_name}" -gt 40 ] && session_name="${session_name:0:40}…"
+    # shellcheck disable=SC1111
+    seg_session_name="$(muted "“${session_name}”")"
+fi
+
 seg_subscription="$subscription_value"
 [ -n "$seg_subscription" ] && seg_subscription="${C_LABEL}${L_SUBSCRIPTION}${RESET} ${seg_subscription}"
 
@@ -2447,6 +2512,21 @@ if [ "$IS_SUBSCRIPTION" -eq 1 ] && [ "$cfg_show_sessions" = "1" ]; then
 
     five_color=$(usage_color "$five_pct" "$cfg_5h_warn" "$cfg_5h_crit")
     seven_color=$(usage_color "$seven_pct" "$cfg_7d_warn" "$cfg_7d_crit")
+
+    # Usage pace only ever escalates a bar's color, never calms it.
+    five_pace_mark=""; seven_pace_mark=""
+    if [ "$cfg_show_usage_pace" = "1" ]; then
+        _pace_color=$(pace_color "$(usage_pace_pct "$five_pct" "$five_reset" 18000)")
+        if [ -n "$_pace_color" ]; then
+            [ "$five_color" = "$RED" ] || five_color="$_pace_color"
+            five_pace_mark=" ${_pace_color}${L_PACE}${RESET}"
+        fi
+        _pace_color=$(pace_color "$(usage_pace_pct "$seven_pct" "$seven_reset" 604800)")
+        if [ -n "$_pace_color" ]; then
+            [ "$seven_color" = "$RED" ] || seven_color="$_pace_color"
+            seven_pace_mark=" ${_pace_color}${L_PACE}${RESET}"
+        fi
+    fi
 
     five_bar=$(render_bar "$five_pct" "$five_color")
     seven_bar=$(render_bar "$seven_pct" "$seven_color")
@@ -2466,16 +2546,30 @@ if [ "$IS_SUBSCRIPTION" -eq 1 ] && [ "$cfg_show_sessions" = "1" ]; then
         seven_days_label="${_seven_days_left}d"
     fi
 
-    seg_sessions="${C_LABEL}${L_FIVE_HOUR}${RESET} ${five_bar} ${five_color}${five_pct}%${RESET}"
+    seg_sessions="${C_LABEL}${L_FIVE_HOUR}${RESET} ${five_bar} ${five_color}${five_pct}%${RESET}${five_pace_mark}"
     if [ -n "$five_reset_countdown" ]; then
         five_reset_marker=$(format_reset_marker "$five_reset" clock)
         seg_sessions="${seg_sessions} $(muted "${L_RESET} ${five_reset_countdown}${five_reset_marker:+ (${five_reset_marker})}")"
     fi
 
-    seg_sessions="${seg_sessions} $(muted "|") ${C_LABEL}${seven_days_label}${RESET} ${seven_bar} ${seven_color}${seven_pct}%${RESET}"
+    seg_sessions="${seg_sessions} $(muted "|") ${C_LABEL}${seven_days_label}${RESET} ${seven_bar} ${seven_color}${seven_pct}%${RESET}${seven_pace_mark}"
     if [ -n "$seven_reset_countdown" ]; then
         seven_reset_marker=$(format_reset_marker "$seven_reset")
         seg_sessions="${seg_sessions} $(muted "${L_RESET} ${seven_reset_countdown}${seven_reset_marker:+ (${seven_reset_marker})}")"
+    fi
+
+    # Spending cap, sent only for accounts that have one. Live stdin only: it is
+    # not cached across sessions like the 5h/7d windows.
+    if is_num "$spend_util_probe"; then
+        _sl_pct=${spend_util_probe%.*}
+        _sl_color=$(usage_color "$_sl_pct" "$cfg_5h_warn" "$cfg_5h_crit")
+        _sl_bar=$(render_bar "$_sl_pct" "$_sl_color")
+        seg_sessions="${seg_sessions} $(muted "|") ${C_LABEL}${L_SPEND_LIMIT}${RESET} ${_sl_bar} ${_sl_color}${_sl_pct}%${RESET}"
+        _sl_countdown=$(fmt_countdown_epoch "$spend_reset")
+        if [ -n "$_sl_countdown" ]; then
+            _sl_marker=$(format_reset_marker "$spend_reset")
+            seg_sessions="${seg_sessions} $(muted "${L_RESET} ${_sl_countdown}${_sl_marker:+ (${_sl_marker})}")"
+        fi
     fi
 
     # Per-model weekly windows from the external snapshot (e.g. a Fable quota the
@@ -2570,9 +2664,8 @@ if [ -z "$seg_balance" ] && [ "$cfg_show_balance" = "1" ] \
         _ac_age=$cfg_api_spend_cache_seconds
         [ -f "$_ac_stamp" ] && _ac_age=$(( $(date +%s) - $(file_mtime "$_ac_stamp") ))
         # Where the per-session transcripts live, for the local estimate. Derived
-        # from this session's own transcript so a relocated CLAUDE_CONFIG_DIR
-        # still resolves, with the stock location as the fallback.
-        _ac_projects="$HOME/.claude/projects"
+        # from this session's own transcript, with the config folder as the fallback.
+        _ac_projects="$CLAUDE_DIR/projects"
         if [ -n "$transcript_path" ]; then
             _ac_p=$(dirname "$(dirname "$transcript_path")")
             [ -d "$_ac_p" ] && _ac_projects="$_ac_p"
@@ -2674,8 +2767,10 @@ fi
 # from that point, and a session that crosses midnight is split across the two
 # days by getting a fresh baseline in the new day's file. Rows unseen for more
 # than a day are dropped on every write, so the file cannot grow without limit.
-seg_today=""
-if [ "$cfg_show_today" = "1" ] && is_num "$cost_usd"; then
+# Week sums the day files from the local day the weekly window opened, so day
+# files are kept for eight days.
+seg_today=""; seg_week=""
+if { [ "$cfg_show_today" = "1" ] || [ "$cfg_show_week" = "1" ]; } && is_num "$cost_usd"; then
     _dc_dir="$CACHE_ROOT/daily-cost"
     mkdir -p "$_dc_dir" 2>/dev/null
     _dc_file="$_dc_dir/$(date +%Y-%m-%d).tsv"
@@ -2683,7 +2778,7 @@ if [ "$cfg_show_today" = "1" ] && is_num "$cost_usd"; then
         : > "$_dc_file"
         # First render of a new day is the one moment worth paying for a sweep
         # of the day files that are now too old to ever be read again.
-        find "$_dc_dir" -name '*.tsv' -mtime +2 -delete 2>/dev/null
+        find "$_dc_dir" -name '*.tsv' -mtime +8 -delete 2>/dev/null
     fi
     _dc_total=$(awk -F'\t' -v sid="${session_id:-unknown}" -v cost="$cost_usd" \
                     -v now="$(date +%s)" -v out="${_dc_file}.tmp" '
@@ -2704,8 +2799,22 @@ if [ "$cfg_show_today" = "1" ] && is_num "$cost_usd"; then
             printf "%.2f", total
         }' "$_dc_file" 2>/dev/null)
     mv "${_dc_file}.tmp" "$_dc_file" 2>/dev/null
-    if is_num "$_dc_total"; then
+    if [ "$cfg_show_today" = "1" ] && is_num "$_dc_total"; then
         seg_today="$(muted "$L_TODAY") ${C_ACCENT}\$${_dc_total}${RESET}"
+    fi
+    if [ "$cfg_show_week" = "1" ] && is_num "${seven_reset%.*}"; then
+        _wk_open=$(( ${seven_reset%.*} - 604800 ))
+        _wk_start=$(date -d "@${_wk_open}" +%Y-%m-%d 2>/dev/null || date -r "$_wk_open" +%Y-%m-%d 2>/dev/null)
+        _wk_files=()
+        while IFS= read -r _wk_file; do
+            _wk_day="${_wk_file##*/}"
+            [[ "${_wk_day%.tsv}" < "$_wk_start" ]] || _wk_files+=("$_wk_file")
+        done < <(find "$_dc_dir" -name '*.tsv' -type f 2>/dev/null)
+        if [ -n "$_wk_start" ] && [ "${#_wk_files[@]}" -gt 0 ]; then
+            _wk_total=$(awk -F'\t' 'NF >= 4 { total += $3 - $2 } END { printf "%.2f", total }' \
+                            "${_wk_files[@]}" 2>/dev/null)
+            is_num "$_wk_total" && seg_week="$(muted "$L_WEEK") ${C_ACCENT}\$${_wk_total}${RESET}"
+        fi
     fi
 fi
 
@@ -2783,10 +2892,17 @@ fi
 # rather than showing a misleading F(0).
 # Cache % is deliberately muted, not threshold-colored: it's informational,
 # and warning colors are reserved for actionable fields.
+# Claude Code's own hit_ratio (v2.1.260+) outranks the token-derived ratio; it
+# may arrive as a 0–1 fraction or a percent.
 seg_cache_ratio=""
-if [ "$cfg_show_cache_ratio" = "1" ] && [ "$token_total" -gt 0 ]; then
-    cache_ratio=$(( ${token_cr%.*} * 100 / token_total ))
-    seg_cache_ratio="$(muted "${L_CACHE_RATIO} ${cache_ratio}%")"
+if [ "$cfg_show_cache_ratio" = "1" ]; then
+    cache_ratio=""
+    if is_num "$stdin_pc_hit"; then
+        cache_ratio=$(awk -v h="$stdin_pc_hit" 'BEGIN { if (h <= 1) h *= 100; printf "%d", h }')
+    elif [ "$token_total" -gt 0 ]; then
+        cache_ratio=$(( ${token_cr%.*} * 100 / token_total ))
+    fi
+    [ -n "$cache_ratio" ] && seg_cache_ratio="$(muted "${L_CACHE_RATIO} ${cache_ratio}%")"
 fi
 
 # Prompt-cache expiry. A CLOCK TIME, never a countdown: the statusline only
@@ -2795,17 +2911,26 @@ fi
 # stopped being true, while a clock time stays correct however stale the render
 # is. The tier comes from the transcript's own cache write (5 minutes vs. one
 # hour); prompt_cache_ttl_seconds only fills in for transcripts recording
-# neither, and never overrides one that does.
+# neither, and never overrides one that does. Claude Code v2.1.260+ sends the
+# real expiry on stdin, which outranks the estimate; Antigravity and older
+# Claude Code still rely on it. A stdin `warm: true` vetoes an estimated
+# "expired", which is exactly the case the estimate gets wrong.
 seg_prompt_cache=""
 if [ "$cfg_show_prompt_cache" = "1" ]; then
     _pc_expiry="$prompt_cache_expiry"
-    if [ -z "$_pc_expiry" ] && is_num "$prompt_cache_fallback_base"; then
-        _pc_expiry=$(( prompt_cache_fallback_base + cfg_prompt_cache_ttl_seconds ))
+    _pc_fallback_ttl="$cfg_prompt_cache_ttl_seconds"
+    is_num "$stdin_pc_ttl" && _pc_fallback_ttl="${stdin_pc_ttl%.*}"
+    if is_num "$stdin_pc_expires"; then
+        _pc_expiry="$stdin_pc_expires"; prompt_cache_ttl="stdin"
+    elif [ -z "$_pc_expiry" ] && is_num "$prompt_cache_fallback_base"; then
+        _pc_expiry=$(( prompt_cache_fallback_base + _pc_fallback_ttl ))
     fi
-    if is_num "$_pc_expiry"; then
-        debug_log "prompt cache: expiry=${_pc_expiry} tier=${prompt_cache_ttl:-fallback ${cfg_prompt_cache_ttl_seconds}}s"
+    if [ "$stdin_pc_warm" = "false" ] && ! is_num "$stdin_pc_expires"; then
+        seg_prompt_cache="${ORANGE}${L_PROMPT_CACHE_EXPIRED}${RESET}"
+    elif is_num "$_pc_expiry"; then
+        debug_log "prompt cache: expiry=${_pc_expiry} tier=${prompt_cache_ttl:-fallback ${_pc_fallback_ttl}}s"
         if [ "$_pc_expiry" -le "$(date +%s)" ]; then
-            seg_prompt_cache="${ORANGE}${L_PROMPT_CACHE_EXPIRED}${RESET}"
+            [ "$stdin_pc_warm" = "true" ] || seg_prompt_cache="${ORANGE}${L_PROMPT_CACHE_EXPIRED}${RESET}"
         else
             _pc_clock=$(format_reset_marker "$_pc_expiry" clock)
             [ -n "$_pc_clock" ] && seg_prompt_cache="$(muted "${L_PROMPT_CACHE} ${_pc_clock}")"
@@ -2924,6 +3049,8 @@ segment_value() {
         added_dirs) printf '%s' "$seg_added_dirs" ;;
         prompt_cache) printf '%s' "$seg_prompt_cache" ;;
         today) printf '%s' "$seg_today" ;;
+        week) printf '%s' "$seg_week" ;;
+        session_name) printf '%s' "$seg_session_name" ;;
         compactions) printf '%s' "$seg_compactions" ;;
         speed) printf '%s' "$seg_speed" ;;
         activity) printf '%s' "$seg_activity" ;;

@@ -1,12 +1,13 @@
 #!/bin/bash
-# super-status one-command install: copies the scripts into ~/.claude/super-status,
-# makes them executable, and wires statusLine into ~/.claude/settings.json
-# (via doctor.sh, which resolves $HOME itself — no placeholder paths to edit).
+# super-status one-command install: copies the scripts into
+# ${CLAUDE_CONFIG_DIR:-~/.claude}/super-status, makes them executable, and wires
+# statusLine into that folder's settings.json (via doctor.sh, which resolves the
+# folder itself — no placeholder paths to edit).
 
 set -e
 
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DEST_DIR="$HOME/.claude/super-status"
+DEST_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/super-status"
 
 if ! command -v jq >/dev/null 2>&1; then
     echo "✗ jq is required. Install it first (e.g. 'brew install jq' / 'apt install jq')."

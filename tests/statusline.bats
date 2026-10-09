@@ -11,7 +11,7 @@ setup() {
     mkdir -p "$HOME/.claude/super-status"
     # ANTHROPIC_ADMIN_KEY is unset alongside the rest so a real key in the
     # developer's environment can never turn a test run into live cost-report calls.
-    unset SUPER_STATUS_DISABLE SUPER_STATUS_CONFIG ANTHROPIC_BASE_URL OPENROUTER_API_KEY \
+    unset SUPER_STATUS_DISABLE SUPER_STATUS_CONFIG CLAUDE_CONFIG_DIR ANTHROPIC_BASE_URL OPENROUTER_API_KEY \
           ANTHROPIC_ADMIN_KEY COLUMNS
     # shellcheck disable=SC1090
     source "$SCRIPT"
@@ -1035,4 +1035,19 @@ epoch_days_ago() { date -v-"$1"d +%s 2>/dev/null || date -d "$1 days ago" +%s; }
     run_statusline "$payload"
     [[ "$(strip_ansi "$output")" == *"+4 -1"* ]]
     [ "$(git -C "$repo" status --porcelain)" = "$(printf ' M f\n?? new.txt')" ]
+}
+
+@test "git file stats count conflicted files as =N" {
+    repo="$BATS_TEST_TMPDIR/conflict-repo"
+    mkdir -p "$repo"
+    git -C "$repo" init -q -b main
+    gitc() { git -C "$repo" -c user.email=t@t -c user.name=t "$@"; }
+    echo base > "$repo/f.txt"; gitc add f.txt; gitc commit -q -m base
+    gitc checkout -q -b other; echo theirs > "$repo/f.txt"; gitc commit -q -am theirs
+    gitc checkout -q main; echo ours > "$repo/f.txt"; gitc commit -q -am ours
+    gitc merge -q other >/dev/null 2>&1 || true
+    echo '{"display":{"git_file_stats":true}}' > "$HOME/.claude/super-status/config.json"
+    payload=$(printf '{"model":{"display_name":"Opus"},"workspace":{"project_dir":"%s"},"cwd":"%s"}' "$repo" "$repo")
+    run_statusline "$payload"
+    [[ "$(strip_ansi "$output")" == *"=1"* ]]
 }
