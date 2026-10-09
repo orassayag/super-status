@@ -13,11 +13,13 @@
 
 setup() {
     REPO_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)"
+    # A native Windows python3 otherwise pipes the README's glyphs as cp1252.
+    export PYTHONUTF8=1
 }
 
 # Both key sets, one per line, from a single pass over the two files.
 extract_keys() { # $1 = script|readme
-    python3 - "$REPO_ROOT" "$1" <<'PY'
+    python3 - "$REPO_ROOT" "$1" <<'PY' | tr -d '\r'
 import json
 import os
 import re
