@@ -630,6 +630,9 @@ SANITIZE_ESC_RE=$'\033\\[[0-9;?]*[ -/]*[@-~]|\033\\][^\a\033]*(\a|\033\\\\)?|\03
 # the visible width the max_width pass counts is the width actually printed.
 # Pure bash on purpose: this runs on a dozen values every render.
 sanitize_text() {
+    # LC_ALL=C so the regex bracket ranges are byte ranges: under a UTF-8
+    # locale macOS's regex engine orders them by collation and misses ESC [ … m.
+    local LC_ALL=C
     local _s="$1" _m
     while [[ "$_s" =~ $SANITIZE_ESC_RE ]]; do
         _m="${BASH_REMATCH[0]}"

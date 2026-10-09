@@ -30,16 +30,19 @@ jobs:
           # The ledger is per calendar year and the tag does not name the year,
           # so the row is looked up across every ledger file rather than
           # guessed from the version number.
+          # The version is trimmed in a copy: assigning to $2 would rebuild $0
+          # with spaces in place of every pipe, emptying the Change cell.
           row="$(awk -F'|' -v v="$version" '
-                   NF >= 5 { gsub(/^[ \t]+|[ \t]+$/, "", $2); if ($2 == v) { print; exit } }
+                   NF >= 5 { ver = $2; gsub(/^[ \t]+|[ \t]+$/, "", ver); if (ver == v) { print; exit } }
                  ' versions/*.md || true)"
           if [ -z "$row" ]; then
             echo "::error::No ledger row for ${version} in versions/*.md — refusing to publish an empty release." >&2
             exit 1
           fi
           # | version | time | `sha` | • one<br>• two |  ->  the Change cell,
-          # with each <br>-joined bullet back on its own line.
-          change="$(printf '%s' "$row" | awk -F'|' '{ print $5 }')"
+          # with each <br>-joined bullet back on its own line. Everything after the
+          # fourth pipe is kept, since a Change cell may itself contain a pipe.
+          change="$(printf '%s' "$row" | sed -E 's/^([^|]*\|){4}//; s/\|[[:space:]]*$//')"
           change="$(printf '%s' "$change" | sed -e 's/<br>/\n/g' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
           if [ -z "$(printf '%s' "$change" | tr -d '[:space:]')" ]; then
             echo "::error::The ledger row for ${version} has an empty Change cell — refusing to publish an empty release." >&2

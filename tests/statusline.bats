@@ -1030,7 +1030,8 @@ epoch_days_ago() { date -v-"$1"d +%s 2>/dev/null || date -d "$1 days ago" +%s; }
     [[ "$(strip_ansi "$output")" == *"+0 -0"* ]]
     printf 'x\ny\nz\n' > "$repo/new.txt"
     printf 'A\nb\npre-existing\n' > "$repo/f"
-    touch -t 202001010000 "$XDG_CACHE_HOME"/super-status/session-diff/*.stat
+    # find, not a glob: setup sources statusline.sh, whose `set -f` disables globbing here.
+    find "$XDG_CACHE_HOME/super-status/session-diff" -name '*.stat' -exec touch -t 202001010000 {} +
     run_statusline "$payload"
     [[ "$(strip_ansi "$output")" == *"+4 -1"* ]]
     [ "$(git -C "$repo" status --porcelain)" = "$(printf ' M f\n?? new.txt')" ]
