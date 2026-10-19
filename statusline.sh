@@ -133,6 +133,9 @@ cfg_show_model=1
 cfg_show_mode=1
 cfg_show_repo=1
 cfg_show_branch=1
+# Working directory relative to the git root (or ~-abbreviated outside a repo).
+# Off by default like the other opt-in elements; "preset": "full" enables it.
+cfg_show_cwd=0
 cfg_show_worktree=1
 cfg_show_lines_changed=1
 cfg_show_version=1
@@ -180,6 +183,7 @@ cfg_color_label=""
 cfg_color_model=""
 cfg_color_repo=""
 cfg_color_branch=""
+cfg_color_cwd=""
 cfg_color_muted=""
 cfg_color_accent=""
 cfg_color_bar_filled=""
@@ -188,8 +192,8 @@ cfg_color_bar_empty=""
 # Layout presets: lines separated by "|", segments within a line by ",".
 # A custom "lines" array in config.json overrides either preset, which is how
 # element reordering and merging elements onto shared lines is expressed.
-LAYOUT_EXPANDED="mode,model,agent,repo,branch,worktree,lines_changed,version,session_name|added_dirs|subscription,sessions,balance|context,cache_ratio,prompt_cache,cost,today,week,total_tokens|loc,session_time,thinking_time,speed,efficiency,tool_calls,compactions|activity|agents|todos|orchestrator"
-LAYOUT_COMPACT="mode,model,agent,repo,branch,worktree,added_dirs,context|subscription,sessions,balance,cost,today,week|activity,agents,todos,orchestrator"
+LAYOUT_EXPANDED="mode,model,agent,repo,branch,cwd,worktree,lines_changed,version,session_name|added_dirs|subscription,sessions,balance|context,cache_ratio,prompt_cache,cost,today,week,total_tokens|loc,session_time,thinking_time,speed,efficiency,tool_calls,compactions|activity|agents|todos|orchestrator"
+LAYOUT_COMPACT="mode,model,agent,repo,branch,cwd,worktree,added_dirs,context|subscription,sessions,balance,cost,today,week|activity,agents,todos,orchestrator"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -1006,7 +1010,7 @@ apply_preset() {
     local _v
     case "$1" in
         full)
-            for _v in git_dirty git_ahead_behind git_file_stats activity agents todos orchestrator \
+            for _v in cwd git_dirty git_ahead_behind git_file_stats activity agents todos orchestrator \
                       added_dirs prompt_cache today week session_name usage_pace compactions speed; do
                 printf -v "cfg_show_${_v}" '%s' 1
             done
@@ -1021,7 +1025,7 @@ apply_preset() {
             done
             ;;
         minimal)
-            for _v in repo worktree lines_changed version git_dirty git_ahead_behind \
+            for _v in repo cwd worktree lines_changed version git_dirty git_ahead_behind \
                       git_file_stats provider mode subscription cost total_tokens loc \
                       session_time thinking_time cache_ratio efficiency tool_calls \
                       activity agents todos orchestrator added_dirs prompt_cache \
@@ -1130,13 +1134,13 @@ if [ -f "$CONFIG_FILE" ]; then
                 display_*)
                     _b=$(to_bool "$_v") || continue
                     case "${_k#display_}" in
-                        model|mode|repo|branch|worktree|lines_changed|version|git_dirty|git_ahead_behind|git_file_stats|provider|effort|subscription|sessions|balance|context|cost|total_tokens|loc|session_time|thinking_time|cache_ratio|efficiency|tool_calls|activity|agents|todos|orchestrator|added_dirs|prompt_cache|today|week|session_name|usage_pace|compactions|speed)
+                        model|mode|repo|branch|cwd|worktree|lines_changed|version|git_dirty|git_ahead_behind|git_file_stats|provider|effort|subscription|sessions|balance|context|cost|total_tokens|loc|session_time|thinking_time|cache_ratio|efficiency|tool_calls|activity|agents|todos|orchestrator|added_dirs|prompt_cache|today|week|session_name|usage_pace|compactions|speed)
                             printf -v "cfg_show_${_k#display_}" '%s' "$_b" ;;
                     esac
                     ;;
                 color_*)
                     case "${_k#color_}" in
-                        label|model|repo|branch|muted|accent|bar_filled|bar_empty)
+                        label|model|repo|branch|cwd|muted|accent|bar_filled|bar_empty)
                             printf -v "cfg_color_${_k#color_}" '%s' "$_v" ;;
                     esac
                     ;;
@@ -1159,12 +1163,13 @@ fi
 # Element colors: built-in defaults, overridable per element from config.
 # The model accent is the same green as "healthy" bar values on purpose —
 # identity/accent and healthy read as one color family, per the redesign.
-C_LABEL="$WHITE"; C_MODEL="$GREEN"; C_REPO="$WHITE"; C_BRANCH="$WHITE"
+C_LABEL="$WHITE"; C_MODEL="$GREEN"; C_REPO="$WHITE"; C_BRANCH="$WHITE"; C_CWD="$WHITE"
 C_MUTED="$GREY"; C_ACCENT="$ORANGE"; C_BAR_FILLED=""; C_BAR_EMPTY=""
 _c=$(resolve_color "$cfg_color_label") && C_LABEL="$_c"
 _c=$(resolve_color "$cfg_color_model") && C_MODEL="$_c"
 _c=$(resolve_color "$cfg_color_repo") && C_REPO="$_c"
 _c=$(resolve_color "$cfg_color_branch") && C_BRANCH="$_c"
+_c=$(resolve_color "$cfg_color_cwd") && C_CWD="$_c"
 _c=$(resolve_color "$cfg_color_muted") && C_MUTED="$_c"
 _c=$(resolve_color "$cfg_color_accent") && C_ACCENT="$_c"
 _c=$(resolve_color "$cfg_color_bar_filled") && C_BAR_FILLED="$_c"
@@ -2540,6 +2545,31 @@ else
     seg_worktree="$_worktree_part"
 fi
 
+# Working directory: relative to the git root when inside a repository ("." at
+# the root itself), otherwise the absolute path with $HOME shortened to "~".
+seg_cwd=""
+if [ "$cfg_show_cwd" = "1" ] && [ -n "$cwd" ]; then
+    _cwd_display=""
+    if [ -n "$git_branch" ]; then
+        if [ -d "$cwd" ] && _git_prefix=$(git_run -C "$cwd" rev-parse --show-prefix); then
+            _cwd_display="${_git_prefix%/}"
+            [ -z "$_cwd_display" ] && _cwd_display="."
+        fi
+        if [ -z "$_cwd_display" ]; then
+            _norm_cwd="${cwd%/}"; [ -z "$_norm_cwd" ] && _norm_cwd="/"
+            _norm_root="${git_root%/}"; [ -z "$_norm_root" ] && _norm_root="/"
+            if [ "$_norm_cwd" = "$_norm_root" ]; then
+                _cwd_display="."
+            elif [[ "$_norm_cwd" == "$_norm_root"/* ]]; then
+                _cwd_display="${_norm_cwd#"$_norm_root"/}"
+            fi
+        fi
+    fi
+    [ -z "$_cwd_display" ] && _cwd_display="${cwd/#$HOME/\~}"
+    _cwd_display=$(sanitize_text "$_cwd_display")
+    [ -n "$_cwd_display" ] && seg_cwd="${C_CWD}${_cwd_display}${RESET}"
+fi
+
 # Each side is the larger of Claude Code's own counter (which also sees edits
 # outside the git root) and the git session diff (which also sees Bash and
 # sub-agent edits). Always rendered, +0 -0 included, so its absence never has
@@ -3128,6 +3158,7 @@ segment_value() {
         model) printf '%s' "$seg_model" ;;
         repo) printf '%s' "$seg_repo" ;;
         branch) printf '%s' "$seg_branch" ;;
+        cwd) printf '%s' "$seg_cwd" ;;
         worktree) printf '%s' "$seg_worktree" ;;
         agent) printf '%s' "$seg_agent" ;;
         lines_changed) printf '%s' "$seg_lines_changed" ;;

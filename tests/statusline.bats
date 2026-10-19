@@ -338,6 +338,41 @@ transcript_payload() {
     [[ "$plain" == *":main* ?1"* ]]
 }
 
+@test "cwd segment is hidden by default" {
+    repo="$BATS_TEST_TMPDIR/cwd-repo"
+    mkdir -p "$repo/src/lib"
+    git -C "$repo" init -q -b main
+    payload=$(printf '{"model":{"display_name":"Opus"},"workspace":{"project_dir":"%s"},"cwd":"%s/src/lib","context_window":{"used_percentage":25}}' "$repo" "$repo")
+    run_statusline "$payload"
+    plain=$(strip_ansi "$output")
+    [[ "$plain" != *"src/lib"* ]]
+}
+
+@test "cwd segment shows the path relative to the git root, or . at the root" {
+    repo="$BATS_TEST_TMPDIR/cwd-repo"
+    mkdir -p "$repo/src/lib"
+    git -C "$repo" init -q -b main
+    git -C "$repo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+    echo '{"display":{"cwd":true}}' > "$HOME/.claude/super-status/config.json"
+    payload=$(printf '{"model":{"display_name":"Opus"},"workspace":{"project_dir":"%s"},"cwd":"%s/src/lib","context_window":{"used_percentage":25}}' "$repo" "$repo")
+    run_statusline "$payload"
+    plain=$(strip_ansi "$output")
+    [[ "$plain" == *":main | src/lib"* ]]
+    payload=$(printf '{"model":{"display_name":"Opus"},"workspace":{"project_dir":"%s"},"cwd":"%s","context_window":{"used_percentage":25}}' "$repo" "$repo")
+    run_statusline "$payload"
+    plain=$(strip_ansi "$output")
+    [[ "$plain" == *":main | . | "* ]]
+}
+
+@test "cwd segment abbreviates HOME with ~ outside a repository" {
+    mkdir -p "$HOME/plain/dir"
+    echo '{"display":{"cwd":true}}' > "$HOME/.claude/super-status/config.json"
+    payload=$(printf '{"model":{"display_name":"Opus"},"workspace":{"project_dir":"%s/plain"},"cwd":"%s/plain/dir","context_window":{"used_percentage":25}}' "$HOME" "$HOME")
+    run_statusline "$payload"
+    plain=$(strip_ansi "$output")
+    [[ "$plain" == *"~/plain/dir"* ]]
+}
+
 # --- e2e: orca/master live run state -----------------------------------------
 
 @test "orchestrator line is off by default even with an active orca status.md" {

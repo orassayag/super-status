@@ -204,7 +204,7 @@ A malformed config never breaks the render — defaults are used and a one-line 
   "api_spend_cache_seconds": 300,
   "model_pricing": {},
   "display": {
-    "model": true, "mode": true, "repo": true, "branch": true, "worktree": true,
+    "model": true, "mode": true, "repo": true, "branch": true, "cwd": false, "worktree": true,
     "lines_changed": true, "version": true, "provider": true, "effort": true,
     "git_dirty": false, "git_ahead_behind": false, "git_file_stats": false,
     "subscription": true, "sessions": true, "balance": true,
@@ -225,7 +225,7 @@ A malformed config never breaks the render — defaults are used and a one-line 
     "enabled": false
   },
   "colors": {
-    "label": "", "model": "", "repo": "", "branch": "",
+    "label": "", "model": "", "repo": "", "branch": "", "cwd": "",
     "muted": "", "accent": "", "bar_filled": "", "bar_empty": ""
   },
   "thresholds": {
@@ -264,6 +264,7 @@ A malformed config never breaks the render — defaults are used and a one-line 
 | `api_credit_as_of` | When `api_credit_balance` was read, as `dd/MM/yyyy` or `dd/MM/yyyy HH:MM`. Required whenever a balance is declared; an absent or malformed value warns rather than guessing. **Prefer the `HH:MM` form for a balance you just read** — a bare date means midnight, so stamping an afternoon reading as today makes the bar re-subtract everything already spent that day. `/super-status:credits` writes the clock time for you; the bare-date form is for backdating a past top-up, where midnight is the right reading |
 | `api_spend_cache_seconds` | How long a fetched spend total is reused before a refresh is spawned (default `300`, minimum `60`). Anthropic's cost data lands ~5 minutes behind the request, and the endpoint asks for at most one poll a minute, so going below a few minutes buys nothing |
 | `model_pricing` | Per-MTok list-rate overrides for the **local** spend estimate, as `{"<model-id substring>": "<input>/<output>"}` — e.g. `{"opus-5": "5/25"}`. Longest matching pattern wins, same rule as `model_params`. Empty (the default) uses the estimator's built-in table; override when Anthropic's rates move or you're on negotiated pricing. Has no effect on the Admin API figure, which is already in dollars |
+| `display.cwd` | `true` shows the `cwd` segment: the session's working directory relative to the git root (`.` at the root itself, `src/lib` in a subfolder), or the `~`-abbreviated absolute path outside a repository. Off by default; `"preset": "full"` turns it on. Sits after the branch in the default layouts; `colors.cwd` recolors it |
 | `display.*` | Per-field show/hide. Field names match the segment names under **Custom layout** below (plus `git_dirty` / `git_ahead_behind` / `git_file_stats` / `provider` / `effort` / `mode`, which are sub-toggles of `branch`/`model`, and `usage_pace`, a sub-toggle of `sessions`) |
 | `git.push_warning_threshold` / `push_critical_threshold` | Unpushed-commit counts at which the `↑N` marker turns orange / red |
 | `git.timeout_seconds` | Seconds any single `git` (or `jj`) call may take before it is abandoned (1–60, default `3`). A statusline re-runs every couple of seconds, so a git call blocked on a stalled network mount does not just delay one render — it queues stuck processes behind every following one. A timed-out call degrades to the same "no repository here" the script already handles. Requires `timeout` (Linux) or `gtimeout` (`brew install coreutils`); with neither present git runs unbounded, exactly as before |
@@ -301,7 +302,7 @@ Any line that ends up with nothing to show (e.g. the `Sub`/`5h`/`Bal` bars all e
 }
 ```
 
-Segment names: `mode`, `model`, `agent` (Antigravity CLI only — the active agent's name and subagent count), `repo`, `branch`, `worktree`, `added_dirs`, `lines_changed`, `version`, `session_name`, `subscription`, `sessions`, `balance`, `context`, `cache_ratio`, `prompt_cache`, `cost`, `today`, `week`, `total_tokens`, `loc`, `session_time`, `thinking_time`, `speed`, `efficiency`, `tool_calls`, `compactions`, `activity`, `agents`, `todos`, `orchestrator`. Empty segments are dropped along with their separator, and fully empty lines are omitted — so listing `sessions` and `balance` on the same line is safe (only one ever renders).
+Segment names: `mode`, `model`, `agent` (Antigravity CLI only — the active agent's name and subagent count), `repo`, `branch`, `cwd`, `worktree`, `added_dirs`, `lines_changed`, `version`, `session_name`, `subscription`, `sessions`, `balance`, `context`, `cache_ratio`, `prompt_cache`, `cost`, `today`, `week`, `total_tokens`, `loc`, `session_time`, `thinking_time`, `speed`, `efficiency`, `tool_calls`, `compactions`, `activity`, `agents`, `todos`, `orchestrator`. Empty segments are dropped along with their separator, and fully empty lines are omitted — so listing `sessions` and `balance` on the same line is safe (only one ever renders).
 
 ### Right-aligned run
 
