@@ -639,7 +639,8 @@ file_mtime() {
 }
 
 file_size() {
-    stat -c %s "$1" 2>/dev/null || stat -f %z "$1" 2>/dev/null || echo 0
+    # -L: measure the target of a symlink, not the link itself
+    stat -L -c %s "$1" 2>/dev/null || stat -L -f %z "$1" 2>/dev/null || echo 0
 }
 
 trim_ws() {
@@ -1033,7 +1034,10 @@ apply_preset() {
 }
 
 if [ -f "$CONFIG_FILE" ]; then
-    if [ -L "$CONFIG_FILE" ] || [ "$(file_size "$CONFIG_FILE")" -gt "$CONFIG_MAX_BYTES" ]; then
+    # A symlinked config (e.g. into a dotfiles repo) is followed; -f already
+    # excludes dangling links and directories, and the size cap applies to the
+    # target.
+    if [ "$(file_size "$CONFIG_FILE")" -gt "$CONFIG_MAX_BYTES" ]; then
         config_warning_line="${BOLD_RED}SUPER-STATUS CONFIG IS INVALID JSON - USING DEFAULTS: ${CONFIG_FILE}${RESET}"
     elif ! _cfg_out=$(jq -r '
         def s(v): if v == null then "" else (v | tostring) end;

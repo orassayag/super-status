@@ -46,6 +46,8 @@ bash install.sh
 
 `install.sh` does the same copy + chmod + settings patch, resolving your home directory itself — no placeholder paths to edit. It preserves an existing `refreshInterval` and defaults it to `2` otherwise.
 
+`config.json` may be a symlink (e.g. into a dotfiles repo); it is followed as long as it resolves to a regular file under 256 KB.
+
 If you have moved Claude Code's config folder with `CLAUDE_CONFIG_DIR`, `install.sh`, `doctor.sh` and the statusline all honour it: files go to `$CLAUDE_CONFIG_DIR/super-status/` and the `settings.json` patched is the one in that folder. A `settings.json` that is a symlink (e.g. into a dotfiles repo) is written through, so it stays a link and keeps its permissions.
 
 ### Option C — manual fallback
@@ -588,7 +590,7 @@ It traces where each value came from — whether the rate-limit windows came fro
 
 **`Orca:` / `Master:` shows nothing even though a wave is running** — it reads `.claude/status.md` / `docs/status/stage-plan.md` from the git root of `cwd`/`project_dir`, so it needs to be run from (or under) the same directory `/orca`/`/master` was run in. It's also possible every row/stage happens to be in a terminal state (`REBASED & MERGED` / `COMMITTED`) at the moment of that particular render — the line only shows while something is still active.
 
-**A bold red `SUPER-STATUS CONFIG IS INVALID JSON` line appears** — your `~/.claude/super-status/config.json` isn't parseable; the statusline is running on defaults until you fix or delete it. `bash ~/.claude/super-status/doctor.sh` confirms which.
+**A bold red `SUPER-STATUS CONFIG IS INVALID JSON` line appears** — your `~/.claude/super-status/config.json` isn't parseable (or is larger than 256 KB); the statusline is running on defaults until you fix or delete it. `bash ~/.claude/super-status/doctor.sh` confirms which.
 
 **I want it gone for one session** — launch with `SUPER_STATUS_DISABLE=1` in the environment; the script exits silently without touching your config.
 

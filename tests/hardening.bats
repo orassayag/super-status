@@ -698,3 +698,22 @@ PY
     [ $(( SECONDS - start )) -lt 5 ]
     [[ "$(strip_ansi "$(cat "$BATS_TEST_TMPDIR/out")")" == *"Opus"* ]] || false
 }
+
+@test "a symlinked config.json is followed" {
+    mkdir -p "$BATS_TEST_TMPDIR/dotfiles"
+    echo '{"display":{"model":false}}' > "$BATS_TEST_TMPDIR/dotfiles/config.json"
+    ln -s "$BATS_TEST_TMPDIR/dotfiles/config.json" "$HOME/.claude/super-status/config.json" || skip "ln -s cannot create symlinks here"
+    run_statusline '{"model":{"display_name":"Opus"},"workspace":{"project_dir":"/a/parent/child"},"context_window":{"used_percentage":25}}'
+    plain=$(strip_ansi "$output")
+    [[ "$plain" != *"INVALID JSON"* ]]
+    [[ "$plain" != *"Opus"* ]]
+}
+
+@test "an oversized config.json is rejected even through a symlink" {
+    mkdir -p "$BATS_TEST_TMPDIR/dotfiles"
+    head -c 300000 /dev/zero | tr '\0' ' ' > "$BATS_TEST_TMPDIR/dotfiles/config.json"
+    ln -s "$BATS_TEST_TMPDIR/dotfiles/config.json" "$HOME/.claude/super-status/config.json" || skip "ln -s cannot create symlinks here"
+    run_statusline '{"model":{"display_name":"Opus"},"workspace":{"project_dir":"/a/parent/child"},"context_window":{"used_percentage":25}}'
+    plain=$(strip_ansi "$output")
+    [[ "$plain" == *"CONFIG IS INVALID JSON"* ]]
+}
