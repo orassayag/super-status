@@ -1,0 +1,39 @@
+# Run with prek (https://github.com/j178/prek) or pre-commit:
+#   prek run --all-files          # everything that gates commits
+#   prek run --all-files --hook-stage manual shfmt   # formatting report
+#   prek install # add a permanent pre-commit hook for your clone of the repo
+# Hooks are `language: system` so they use the same shellcheck/bats/shfmt as CI
+# (see .github/workflows/ci.yml) instead of pinned downloads.
+repos:
+  - repo: builtin
+    hooks:
+      - id: trailing-whitespace
+        exclude: '\.md$'
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-json
+
+  - repo: local
+    hooks:
+      - id: shellcheck
+        name: shellcheck
+        entry: shellcheck
+        language: system
+        files: '^(statusline|doctor|install)\.sh$|^scripts/.*\.sh$'
+
+      - id: bats
+        name: bats
+        entry: bats tests/
+        language: system
+        pass_filenames: false
+        always_run: true
+
+      # Manual: the existing scripts are not shfmt-clean (statusline.sh alone
+      # differs by several hundred lines), so gating commits on it would force a
+      # repo-wide reformat. Style comes from .editorconfig.
+      - id: shfmt
+        name: shfmt
+        entry: shfmt -d
+        language: system
+        types: [shell]
+        stages: [manual]

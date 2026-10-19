@@ -1,0 +1,27 @@
+# EditorConfig for super-status. root = true stops lookup here so a personal
+# ~/.editorconfig (e.g. tab indentation) can't leak into this repo.
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+
+[*.{yml,yaml,json}]
+indent_size = 2
+
+# Trailing double-space is a Markdown hard line break.
+[*.md]
+trim_trailing_whitespace = false
+
+# Read by shfmt: indent `case` arms one level, as the scripts already do.
+[*.sh]
+shell_variant = bash
+switch_case_indent = true
+
+[*.bats]
+shell_variant = bats
+switch_case_indent = true
