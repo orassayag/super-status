@@ -199,6 +199,7 @@ A malformed config never breaks the render — defaults are used and a one-line 
   "added_dirs_name_width": 24,
   "added_dirs_layout": "inline",
   "plan_label": "",
+  "subscription_start_date": "",
   "api_credit_balance": null,
   "api_credit_as_of": "",
   "api_spend_cache_seconds": 300,
@@ -260,6 +261,7 @@ A malformed config never breaks the render — defaults are used and a one-line 
 | `added_dirs_name_width` | Each added directory's name is cut to this many characters (4–80, default `24`) |
 | `added_dirs_layout` | `inline` (the default) puts them on the identity line beside the project name — `super-status:main +shared-lib`; `line` gives them a row of their own — `Added dirs: shared-lib, other-thing`. Only the `line` form is addressable as an `added_dirs` segment in a custom `lines` layout; the `inline` form attaches to whichever identity segment rendered |
 | `plan_label` | Overrides the account-mode badge, the first segment on the identity line (`API \| ◆ Opus 5`). Empty (the default) auto-detects — see **Account-mode badge** below. Set it to whatever you want rendered: `"Max 20x"`, `"Pro"`, `"Team"` |
+| `subscription_start_date` | Start of your monthly billing cycle as `dd/MM/yyyy` (day first), which drives the `Sub` bar. Empty (the default) falls back to a `"subscription_start_date"` line in `CLAUDE.md`. See **Subscription tracking setup** below |
 | `api_credit_balance` | Your prepaid credit balance in USD, read off the Console's **Credit balance** card, e.g. `96.49`. Turns on the `Bal` bar in API mode. `null` (the default) = the whole feature is inert — see **Prepaid API credit bar** below |
 | `api_credit_as_of` | When `api_credit_balance` was read, as `dd/MM/yyyy` or `dd/MM/yyyy HH:MM`. Required whenever a balance is declared; an absent or malformed value warns rather than guessing. **Prefer the `HH:MM` form for a balance you just read** — a bare date means midnight, so stamping an afternoon reading as today makes the bar re-subtract everything already spent that day. `/super-status:credits` writes the clock time for you; the bare-date form is for backdating a past top-up, where midnight is the right reading |
 | `api_spend_cache_seconds` | How long a fetched spend total is reused before a refresh is spawned (default `300`, minimum `60`). Anthropic's cost data lands ~5 minutes behind the request, and the endpoint asks for at most one poll a minute, so going below a few minutes buys nothing |
@@ -424,17 +426,16 @@ Detected when Claude Code's `rate_limits` data is present (i.e. you're authentic
 
 ## Subscription tracking setup
 
-The `Sub` bar tracks how far you are through your current monthly billing cycle. It can't be automatic: Anthropic exposes no billing or renewal date anywhere in the JSON Claude Code hands to statusline scripts — so you declare your subscription start date once, in a `CLAUDE.md` file, and super-status derives every subsequent monthly cycle from it.
+The `Sub` bar tracks how far you are through your current monthly billing cycle. It can't be automatic: Anthropic exposes no billing or renewal date anywhere in the JSON Claude Code hands to statusline scripts — so you declare your subscription start date once, in `~/.claude/super-status/config.json`, and super-status derives every subsequent monthly cycle from it.
 
-**Setup (one line, once):** paste this into your CLAUDE.md — either the project-local `CLAUDE.md` at the repo root, or the global `~/.claude/CLAUDE.md` — with your own date:
+**Setup (once):** add the key to your `config.json` with your own date:
 
-```
-<!-- "subscription_start_date": "14/07/2026" -->
+```json
+{ "subscription_start_date": "14/07/2026" }
 ```
 
 - The date **must be dd/MM/yyyy** (day first — `14/07/2026`, not `07/14/2026`), matching every other date this script prints.
-- The HTML-comment wrapper is recommended so the line doesn't clutter the rendered doc, but it isn't required — the key is matched anywhere in the file (comment, code block, or plain text).
-- A project-local `CLAUDE.md` takes priority over the global one, so you can override per project if needed.
+- **Legacy fallback:** if `config.json` has no `subscription_start_date`, the same key is still read from a `CLAUDE.md` line such as `<!-- "subscription_start_date": "14/07/2026" -->` — project-local `CLAUDE.md` first, then the global `~/.claude/CLAUDE.md`. The `config.json` value wins over both. `config.json` is the recommended place; it keeps tool settings out of your instruction files.
 
 **Renewing (each new billing cycle):** after you purchase/renew, run the plugin command to reset the start date to today so the `Sub` cycle restarts from the renewal day — no hand-editing:
 
@@ -442,19 +443,19 @@ The `Sub` bar tracks how far you are through your current monthly billing cycle.
 /super-status:subscribe
 ```
 
-It rewrites the existing `subscription_start_date` in the first `CLAUDE.md` that has one (project-local first, then global), or adds it to `~/.claude/CLAUDE.md` if neither does. Pass a `dd/MM/yyyy` date to backdate it (e.g. you renewed yesterday):
+It rewrites `subscription_start_date` in `config.json` if it has one, otherwise in the first `CLAUDE.md` that has one (project-local first, then global), and adds it to `config.json` if none does. Pass a `dd/MM/yyyy` date to backdate it (e.g. you renewed yesterday):
 
 ```
 /super-status:subscribe 06/08/2026
 ```
 
-**If the key is missing from both files**, a bold red reminder appears as the very first line of the statusline until you add it:
+**If the key is missing from `config.json` and `CLAUDE.md`**, a bold red reminder appears as the very first line of the statusline until you add it:
 
 ```
-SUBSCRIPTION START DATE IS MISSING - ADD IT TO THE CLAUDE.MD: "subscription_start_date": "dd/MM/yyyy"
+SUBSCRIPTION START DATE IS MISSING - SET "subscription_start_date": "dd/MM/yyyy" IN SUPER-STATUS/CONFIG.JSON
 ```
 
-**If the key is present but the value isn't a real dd/MM/yyyy date** (wrong format, or an impossible date like `31/02/2026`), the same line appears with `INVALID` instead of `MISSING`. Note that an invalid value in the local file is reported as-is — it does **not** fall back to the global file, since a broken local value is almost certainly a typo you'd want to know about rather than silently mask.
+**If the key is present but the value isn't a real dd/MM/yyyy date** (wrong format, or an impossible date like `31/02/2026`), the same line appears with `INVALID` instead of `MISSING`. Note that an invalid value is reported as-is — it does **not** fall back to the next source (`config.json` → local `CLAUDE.md` → global `CLAUDE.md`), since a broken local value is almost certainly a typo you'd want to know about rather than silently mask.
 
 **Once a valid date is found**, the warning disappears and the `Sub` bar renders at the start of the usage-bar line:
 
@@ -597,7 +598,7 @@ It traces where each value came from — whether the rate-limit windows came fro
 
 **The `5h`/`Nd` bars or `Tok` show nothing even though I'm on a subscription plan** — this is expected before your first message exchange in a session; see **Live updates** above. It should appear after your next turn.
 
-**A bold red `SUBSCRIPTION START DATE IS MISSING/INVALID` line appears at the top** — that's the subscription-cycle feature asking for its one-time setup; see **Subscription tracking setup** above for the exact line to paste into your CLAUDE.md and the dd/MM/yyyy format it requires.
+**A bold red `SUBSCRIPTION START DATE IS MISSING/INVALID` line appears at the top** — that's the subscription-cycle feature asking for its one-time setup; see **Subscription tracking setup** above for the `config.json` key to set and the dd/MM/yyyy format it requires.
 
 **`5h` shows a percentage over 100%** — expected; see **Live updates** above. Not a bug in this script.
 

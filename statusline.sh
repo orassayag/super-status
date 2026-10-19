@@ -95,6 +95,10 @@ cfg_model_pricing_labels=()
 # thing that names Pro vs. Max — is null on most accounts, so plan_label is the
 # override that makes the tier visible.
 cfg_plan_label=""
+# Subscription cycle start, dd/MM/yyyy. Empty = fall back to CLAUDE.md. Kept raw
+# (not trimmed-to-valid) so a malformed value reports INVALID instead of silently
+# falling through to the CLAUDE.md lookup.
+cfg_subscription_start_date=""
 # Prepaid API credit bar. Anthropic publishes no credit-balance endpoint (the
 # Console's "Credit balance" card is not in the public API), so the balance is a
 # user-declared snapshot and everything spent since it comes from the Admin API
@@ -1059,6 +1063,7 @@ if [ -f "$CONFIG_FILE" ]; then
             ["auto_compact_window", s(.auto_compact_window)],
             ["model_source", s(.model_source)],
             ["plan_label", s(.plan_label)],
+            ["subscription_start_date", s(.subscription_start_date)],
             ["api_credit_balance", s(.api_credit_balance)],
             ["api_credit_as_of", s(.api_credit_as_of)],
             ["api_spend_cache_seconds", s(.api_spend_cache_seconds)],
@@ -1100,6 +1105,7 @@ if [ -f "$CONFIG_FILE" ]; then
                 auto_compact_window) is_num "$_v" && [ "${_v%.*}" -ge 1000 ] && cfg_auto_compact_window="${_v%.*}" ;;
                 model_source) case "$_v" in stdin|transcript|auto) cfg_model_source="$_v" ;; esac ;;
                 plan_label) [ -n "$_v" ] && cfg_plan_label=$(trim_ws "$_v") ;;
+                subscription_start_date) [ -n "$_v" ] && cfg_subscription_start_date=$(trim_ws "$_v") ;;
                 api_credit_balance) is_num "$_v" && cfg_api_credit_balance="$_v" ;;
                 api_credit_as_of) [ -n "$_v" ] && cfg_api_credit_as_of=$(trim_ws "$_v") ;;
                 api_spend_cache_seconds) is_num "$_v" && [ "${_v%.*}" -ge 60 ] && cfg_api_spend_cache_seconds="${_v%.*}" ;;
@@ -1220,8 +1226,8 @@ case "$cfg_language" in
         L_MASTER="Master:"
         L_RESET="Reset"
         L_LEFT="left"
-        L_SUB_MISSING='SUBSCRIPTION START DATE IS MISSING - ADD IT TO THE CLAUDE.MD: "subscription_start_date": "dd/MM/yyyy"'
-        L_SUB_INVALID='SUBSCRIPTION START DATE IS INVALID - ADD IT TO THE CLAUDE.MD: "subscription_start_date": "dd/MM/yyyy"'
+        L_SUB_MISSING='SUBSCRIPTION START DATE IS MISSING - SET "subscription_start_date": "dd/MM/yyyy" IN SUPER-STATUS/CONFIG.JSON'
+        L_SUB_INVALID='SUBSCRIPTION START DATE IS INVALID - SET "subscription_start_date": "dd/MM/yyyy" IN SUPER-STATUS/CONFIG.JSON'
         L_BAL_AS_OF="as of"
         L_BAL_ESTIMATE="est."
         L_BAL_DECLARED="declared"
@@ -2397,9 +2403,10 @@ is_num "$dur_ms" && session_dur_value=$(fmt_duration_ms "$dur_ms")
 # Subscription renewal cycle — Anthropic exposes no billing/renewal date in
 # the stdin JSON, so the start date is read from a user-declared
 #   "subscription_start_date": "dd/MM/yyyy"
-# line in CLAUDE.md — local project file first, then the global one. Local
-# wins; a found-but-invalid value short-circuits (does NOT fall through to
-# global). Subscription mode only: API-key/OpenRouter users have no cycle to
+# key in super-status/config.json, which wins; otherwise the same line in
+# CLAUDE.md — local project file first, then the global one (legacy). A
+# found-but-invalid value short-circuits (does NOT fall through to the next
+# source). Subscription mode only: API-key/OpenRouter users have no cycle to
 # track, so the whole feature (file reads, warning, bar) is inert for them.
 # ---------------------------------------------------------------------------
 SUBSCRIPTION_DATE_STATE=""
@@ -2407,6 +2414,15 @@ SUBSCRIPTION_START_RAW=""
 
 resolve_subscription_start_date() {
     local _file _raw
+    if [ -n "$cfg_subscription_start_date" ]; then
+        if [ -n "$(parse_subscription_date "$cfg_subscription_start_date")" ]; then
+            SUBSCRIPTION_DATE_STATE="valid"
+            SUBSCRIPTION_START_RAW="$cfg_subscription_start_date"
+        else
+            SUBSCRIPTION_DATE_STATE="invalid"
+        fi
+        return
+    fi
     for _file in "${git_root:+$git_root/CLAUDE.md}" "$CLAUDE_DIR/CLAUDE.md"; do
         { [ -n "$_file" ] && [ -f "$_file" ]; } || continue
         _raw=$(grep -o '"subscription_start_date"[[:space:]]*:[[:space:]]*"[^"]*"' "$_file" 2>/dev/null | head -n1)

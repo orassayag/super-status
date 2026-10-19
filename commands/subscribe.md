@@ -26,31 +26,43 @@ else
 fi
 
 KEY_RE='"subscription_start_date"[[:space:]]*:[[:space:]]*"[^"]*"'
+CFG="${SUPER_STATUS_CONFIG:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/super-status/config.json}"
 updated=""
 old=""
-# Match statusline.sh's resolution order: project-local CLAUDE.md, then global.
-for f in "./CLAUDE.md" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/CLAUDE.md"; do
-  [ -f "$f" ] || continue
-  if grep -Eq "$KEY_RE" "$f"; then
-    old=$(grep -Eo "$KEY_RE" "$f" | head -n1 | sed -E 's#.*"([^"]*)"$#\1#')
-    tmp=$(mktemp) || { echo "mktemp failed"; exit 1; }
-    sed -E "s#(\"subscription_start_date\"[[:space:]]*:[[:space:]]*\")[^\"]*(\")#\\1${NEW_DATE}\\2#" "$f" > "$tmp" && mv "$tmp" "$f"
-    updated="$f"
-    break
-  fi
-done
+# Match statusline.sh's resolution order: config.json, then project-local
+# CLAUDE.md, then global CLAUDE.md.
+if [ -f "$CFG" ] && [ ! -L "$CFG" ] && jq -e '.subscription_start_date // empty' "$CFG" >/dev/null 2>&1; then
+  old=$(jq -r '.subscription_start_date' "$CFG")
+  tmp=$(mktemp) || { echo "mktemp failed"; exit 1; }
+  jq --arg d "$NEW_DATE" '.subscription_start_date = $d' "$CFG" > "$tmp" && mv "$tmp" "$CFG" || { rm -f "$tmp"; echo "jq update failed"; exit 1; }
+  updated="$CFG"
+fi
+if [ -z "$updated" ]; then
+  for f in "./CLAUDE.md" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/CLAUDE.md"; do
+    [ -f "$f" ] || continue
+    if grep -Eq "$KEY_RE" "$f"; then
+      old=$(grep -Eo "$KEY_RE" "$f" | head -n1 | sed -E 's#.*"([^"]*)"$#\1#')
+      tmp=$(mktemp) || { echo "mktemp failed"; exit 1; }
+      sed -E "s#(\"subscription_start_date\"[[:space:]]*:[[:space:]]*\")[^\"]*(\")#\\1${NEW_DATE}\\2#" "$f" > "$tmp" && mv "$tmp" "$f"
+      updated="$f"
+      break
+    fi
+  done
+fi
 
 if [ -z "$updated" ]; then
-  target="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/CLAUDE.md"
-  printf '\n"subscription_start_date": "%s"\n' "$NEW_DATE" >> "$target"
-  updated="$target"
-  echo "No existing subscription_start_date found — added it."
+  mkdir -p "$(dirname "$CFG")"
+  [ -f "$CFG" ] || echo '{}' > "$CFG"
+  tmp=$(mktemp) || { echo "mktemp failed"; exit 1; }
+  jq --arg d "$NEW_DATE" '.subscription_start_date = $d' "$CFG" > "$tmp" && mv "$tmp" "$CFG" || { rm -f "$tmp"; echo "jq update failed"; exit 1; }
+  updated="$CFG"
+  echo "No existing subscription_start_date found — added it to config.json."
 fi
 
 echo "subscription_start_date: ${old:-<none>} -> ${NEW_DATE}  (${updated})"
 ```
 
 After it succeeds, tell the user the cycle now runs from `NEW_DATE` and that the
-`Sub` bar reflects it on the **next** turn (statusline re-reads CLAUDE.md each
-render). Do not hand-edit CLAUDE.md yourself — if the snippet fails, show its
+`Sub` bar reflects it on the **next** turn (statusline re-reads its config each
+render). Do not hand-edit the files yourself — if the snippet fails, show its
 exact output.

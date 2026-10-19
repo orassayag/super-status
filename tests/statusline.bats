@@ -187,6 +187,31 @@ SUBSCRIPTION_PAYLOAD='{"model":{"display_name":"Opus"},"workspace":{"project_dir
     [[ "$plain" == *"SUBSCRIPTION START DATE IS INVALID"* ]]
 }
 
+@test "subscription start date is read from config.json" {
+    echo '{"subscription_start_date": "14/07/2026"}' > "$HOME/.claude/super-status/config.json"
+    run_statusline "$SUBSCRIPTION_PAYLOAD"
+    plain=$(strip_ansi "$output")
+    [[ "$plain" == *"Sub "* ]]
+    [[ "$plain" != *"SUBSCRIPTION START DATE"* ]]
+}
+
+@test "config.json start date wins over CLAUDE.md" {
+    echo '{"subscription_start_date": "14/07/2026"}' > "$HOME/.claude/super-status/config.json"
+    echo '"subscription_start_date": "31/02/2026"' > "$HOME/.claude/CLAUDE.md"
+    run_statusline "$SUBSCRIPTION_PAYLOAD"
+    plain=$(strip_ansi "$output")
+    [[ "$plain" == *"Sub "* ]]
+    [[ "$plain" != *"SUBSCRIPTION START DATE"* ]]
+}
+
+@test "invalid config.json start date reports INVALID without falling back to CLAUDE.md" {
+    echo '{"subscription_start_date": "31/02/2026"}' > "$HOME/.claude/super-status/config.json"
+    echo '"subscription_start_date": "14/07/2026"' > "$HOME/.claude/CLAUDE.md"
+    run_statusline "$SUBSCRIPTION_PAYLOAD"
+    plain=$(strip_ansi "$output")
+    [[ "$plain" == *"SUBSCRIPTION START DATE IS INVALID"* ]]
+}
+
 # --- e2e: rate-limit persistence across /clear ------------------------------
 
 @test "cached rate limits are restored when a fresh session omits them" {
