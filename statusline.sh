@@ -2404,26 +2404,26 @@ try:
 except Exception:
     pass
 
-print(f'TOKENS\t{int(total_in)}\t{int(total_out)}')
+print(f'TOKENS\x1f{int(total_in)}\x1f{int(total_out)}')
 if latest_model:
-    print(f'MODEL\t{latest_model}')
-print(f'BUCKET\tTOTAL\t{sum(buckets.values())}')
+    print(f'MODEL\x1f{latest_model}')
+print(f'BUCKET\x1fTOTAL\x1f{sum(buckets.values())}')
 for key, count in buckets.items():
-    print(f'BUCKET\t{key}\t{count}')
+    print(f'BUCKET\x1f{key}\x1f{count}')
 if compactions:
-    print(f'COMPACTIONS\t{compactions}')
+    print(f'COMPACTIONS\x1f{compactions}')
 if cache_write_epoch is not None and cache_write_ttl:
-    print(f'CACHEEXP\t{int(cache_write_epoch + cache_write_ttl)}\t{cache_write_ttl}')
+    print(f'CACHEEXP\x1f{int(cache_write_epoch + cache_write_ttl)}\x1f{cache_write_ttl}')
 elif last_main_assistant_epoch is not None:
     # No tier recorded on any cache write — the render side dates the
     # configured fallback TTL from here rather than assuming a tier.
-    print(f'CACHEBASE\t{int(last_main_assistant_epoch)}')
+    print(f'CACHEBASE\x1f{int(last_main_assistant_epoch)}')
 # A rate is only meaningful over a plausible interval: below half a second the
 # division amplifies clock noise, and a gap of minutes means the session was
 # idle, not slow. Outside that band, and under a response too short to average,
 # nothing is emitted rather than a figure that would mislead.
 if speed_seconds is not None and 0.5 <= speed_seconds <= 600 and speed_tokens >= 50:
-    print('SPEED\t%.1f' % (speed_tokens / speed_seconds))
+    print('SPEED\x1f%.1f' % (speed_tokens / speed_seconds))
 
 # Activity groups: newest first, consecutive completed calls of the same tool
 # collapsed into one "×N" group. Agents and the to-do tools have their own lines.
@@ -2442,12 +2442,12 @@ for entry in reversed(tools):
 for group in groups:
     target = group['target'] if group['count'] == 1 else ''
     path = group['path'] if group['count'] == 1 else ''
-    print(f"ACT\t{group['status']}\t{group['count']}\t{group['name']}\t{target}\t{path}")
+    print(f"ACT\x1f{group['status']}\x1f{group['count']}\x1f{group['name']}\x1f{target}\x1f{path}")
 
 for entry in tools:
     if entry.get('agent') and not entry['done']:
         effort = subagent_effort(agent_id_for(entry))
-        print(f"AGENT\t{entry['epoch']}\t{entry['atype']}\t{entry['amodel']}\t{entry['desc']}\t{effort}")
+        print(f"AGENT\x1f{entry['epoch']}\x1f{entry['atype']}\x1f{entry['amodel']}\x1f{entry['desc']}\x1f{effort}")
 
 if todos:
     total = len(todos)
@@ -2458,7 +2458,7 @@ if todos:
     text = ''
     if isinstance(current, dict):
         text = clean(current.get('activeForm') or current.get('content'), 60)
-    print(f'TODO\t{completed}\t{total}\t{text}')
+    print(f'TODO\x1f{completed}\x1f{total}\x1f{text}')
 PYEOF
 )
         printf '%s\n' "$_tr_value" > "$_tr_file"
@@ -2467,7 +2467,7 @@ PYEOF
 
     if [ -s "$_tr_file" ]; then
         _now_epoch=$(date +%s)
-        while IFS=$'\t' read -r _tag _a _b _c _d _e; do
+        while IFS=$'\x1f' read -r _tag _a _b _c _d _e; do
             case "$_tag" in
                 TOKENS)
                     session_total_input="$_a"; session_total_output="$_b" ;;
