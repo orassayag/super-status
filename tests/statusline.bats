@@ -378,6 +378,32 @@ EOF
     [[ "$plain" == *"Activity: ◐ Edit: auth.ts | ✓ Grep: foo | ✓ Read ×2"* ]]
 }
 
+@test "the Todo line follows TaskCreate, TaskUpdate and deleted tasks" {
+    echo '{"display":{"todos":true}}' > "$HOME/.claude/super-status/config.json"
+    cat > "$BATS_TEST_TMPDIR/transcript.jsonl" <<'EOF'
+{"timestamp":"2026-07-17T10:00:00.000Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"c1","name":"TaskCreate","input":{"subject":"Read code","description":"d"}},{"type":"tool_use","id":"c2","name":"TaskCreate","input":{"subject":"Scratch idea"}},{"type":"tool_use","id":"c3","name":"TaskCreate","input":{"subject":"Fix auth bug","activeForm":"Fixing auth bug"}},{"type":"tool_use","id":"c4","name":"TaskCreate","input":{"subject":"Add tests"}}]}}
+{"timestamp":"2026-07-17T10:00:05.000Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"u1","name":"TaskUpdate","input":{"taskId":"1","status":"completed"}},{"type":"tool_use","id":"u2","name":"TaskUpdate","input":{"taskId":"2","status":"deleted"}},{"type":"tool_use","id":"u3","name":"TaskUpdate","input":{"taskId":"3","status":"in_progress"}}]}}
+EOF
+    run_statusline "$(transcript_payload)"
+    plain=$(strip_ansi "$output")
+    [[ "$plain" == *"Todo: ▸ Fixing auth bug (1/3)"* ]]
+}
+
+@test "agent effort shows beside the model only when display.agent_effort is on" {
+    write_transcript
+    session_dir="$BATS_TEST_TMPDIR/transcript/subagents"
+    mkdir -p "$session_dir"
+    echo '{"agentType":"Explore","toolUseId":"t5"}' > "$session_dir/agent-abc123.meta.json"
+    printf '%s\n' '{"type":"user","message":{"role":"user","content":"go"}}' \
+        '{"type":"assistant","effort":"medium","message":{"role":"assistant","content":[]}}' > "$session_dir/agent-abc123.jsonl"
+    echo '{"display":{"agents":true}}' > "$HOME/.claude/super-status/config.json"
+    run_statusline "$(transcript_payload)"
+    [[ "$(strip_ansi "$output")" == *"Agents: ◐ Explore [haiku]: Finding auth code ("* ]]
+    echo '{"display":{"agents":true,"agent_effort":true}}' > "$HOME/.claude/super-status/config.json"
+    run_statusline "$(transcript_payload)"
+    [[ "$(strip_ansi "$output")" == *"Agents: ◐ Explore [haiku · medium]: Finding auth code ("* ]]
+}
+
 @test "truncated agent descriptions never split an emoji or an accented letter" {
     echo '{"preset":"full"}' > "$HOME/.claude/super-status/config.json"
     pad=$(printf 'a%.0s' {1..48})

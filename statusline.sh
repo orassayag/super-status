@@ -162,6 +162,8 @@ cfg_show_efficiency=1
 cfg_show_tool_calls=1
 cfg_show_activity=0
 cfg_show_agents=0
+# Each running subagent's effort level beside its model on the Agents: line.
+cfg_show_agent_effort=0
 cfg_show_todos=0
 cfg_show_orchestrator=0
 cfg_show_added_dirs=0
@@ -1014,7 +1016,7 @@ apply_preset() {
     local _v
     case "$1" in
         full)
-            for _v in cwd git_dirty git_ahead_behind git_file_stats activity agents todos orchestrator \
+            for _v in cwd git_dirty git_ahead_behind git_file_stats activity agents agent_effort todos orchestrator \
                       added_dirs prompt_cache today week session_name usage_pace compactions speed; do
                 printf -v "cfg_show_${_v}" '%s' 1
             done
@@ -1032,7 +1034,7 @@ apply_preset() {
             for _v in repo cwd worktree lines_changed version git_dirty git_ahead_behind \
                       git_file_stats provider mode subscription cost total_tokens loc \
                       session_time thinking_time cache_ratio efficiency tool_calls \
-                      activity agents todos orchestrator added_dirs prompt_cache \
+                      activity agents agent_effort todos orchestrator added_dirs prompt_cache \
                       today week session_name usage_pace compactions speed; do
                 printf -v "cfg_show_${_v}" '%s' 0
             done
@@ -1140,7 +1142,7 @@ if [ -f "$CONFIG_FILE" ]; then
                 display_*)
                     _b=$(to_bool "$_v") || continue
                     case "${_k#display_}" in
-                        model|mode|repo|branch|cwd|worktree|lines_changed|version|git_dirty|git_ahead_behind|git_file_stats|provider|effort|subscription|sessions|balance|context|cost|total_tokens|loc|session_time|thinking_time|cache_ratio|efficiency|tool_calls|activity|agents|todos|orchestrator|added_dirs|prompt_cache|today|week|session_name|usage_pace|compactions|speed)
+                        model|mode|repo|branch|cwd|worktree|lines_changed|version|git_dirty|git_ahead_behind|git_file_stats|provider|effort|subscription|sessions|balance|context|cost|total_tokens|loc|session_time|thinking_time|cache_ratio|efficiency|tool_calls|activity|agents|agent_effort|todos|orchestrator|added_dirs|prompt_cache|today|week|session_name|usage_pace|compactions|speed)
                             printf -v "cfg_show_${_k#display_}" '%s' "$_b" ;;
                     esac
                     ;;
@@ -1978,13 +1980,20 @@ buckets = {'SKILLS': 0, 'CODE': 0, 'COMMANDS': 0, 'READ': 0, 'MCP': 0, 'OTHER': 
 code_tools = {'edit', 'write', 'multiedit', 'notebookedit'}
 read_tools = {'read', 'glob', 'grep', 'ls'}
 agent_tools = {'task', 'agent'}
+task_tools = {'todowrite', 'taskcreate', 'taskupdate'}
 
 tools = []
 tools_by_id = {}
 # A background agent's completion notice may name only its task id, which is
 # the agentId its launch result reported.
 agent_launches = {}
-latest_todos = None
+todos = []
+# Task id -> index in todos; -1 retires an id whose task was deleted or dropped
+# by a TodoWrite, so it never falls back to whichever task now holds its slot.
+task_index = {}
+# Claude Code numbers TaskCreate tasks 1, 2, 3... and never reuses a number.
+next_task_id = 1
+task_statuses = {'pending', 'in_progress', 'completed'}
 latest_model = ''
 compactions = 0
 # Prompt-cache expiry and output speed are both read off the newest MAIN-session
@@ -2108,6 +2117,138 @@ def task_notice(obj):
         return None
     tool_use_id = re.search(r'<tool-use-id>([^<]+)</tool-use-id>', notice)
     return tool_use_id.group(1) if tool_use_id else agent_launches.get(task_id.group(1))
+
+
+def move_tasks(new_index_for):
+    for task_id, index in task_index.items():
+        if index >= 0:
+            task_index[task_id] = new_index_for(index)
+
+
+# TodoWrite replaces the whole list. Each new todo takes over the ids of the
+# first unclaimed old todo with the same text, so tasks created earlier keep
+# resolving; ids of todos that disappeared retire.
+def replace_todos(new_todos):
+    global todos
+    old_by_content = {}
+    for index, todo in enumerate(todos):
+        if isinstance(todo.get('content'), str):
+            old_by_content.setdefault(todo['content'], []).append(index)
+    moved = {}
+    for index, todo in enumerate(new_todos):
+        olds = old_by_content.get(todo.get('content')) if isinstance(todo.get('content'), str) else None
+        if olds:
+            moved[olds.pop(0)] = index
+    todos = list(new_todos)
+    move_tasks(lambda index: moved.get(index, -1))
+
+
+# TaskUpdate names a task by the id TaskCreate assigned, or by its 1-based position.
+def find_task(task_id):
+    if isinstance(task_id, bool) or not isinstance(task_id, (str, int)):
+        return None
+    key = str(task_id)
+    if key in task_index:
+        return task_index[key] if task_index[key] >= 0 else None
+    position = int(key) - 1 if key.isdigit() else -1
+    return position if 0 <= position < len(todos) else None
+
+
+def task_text(tool_input):
+    for key in ('subject', 'description'):
+        if isinstance(tool_input.get(key), str) and tool_input[key].strip():
+            return tool_input[key]
+    return None
+
+
+def apply_task_tool(low, tool_input, tool_use_id):
+    global next_task_id
+    if low == 'todowrite':
+        if isinstance(tool_input.get('todos'), list):
+            replace_todos([t for t in tool_input['todos'] if isinstance(t, dict)])
+    elif low == 'taskcreate':
+        status = tool_input.get('status')
+        todos.append({'content': task_text(tool_input) or 'Untitled task',
+                      'activeForm': tool_input.get('activeForm'),
+                      'status': status if status in task_statuses else 'pending'})
+        numbered = str(next_task_id)
+        next_task_id += 1
+        explicit = tool_input.get('taskId')
+        if isinstance(explicit, (str, int)) and not isinstance(explicit, bool):
+            ids = [str(explicit)]
+        else:
+            ids = [numbered, tool_use_id]
+        for task_id in ids:
+            if task_id:
+                task_index[task_id] = len(todos) - 1
+    elif low == 'taskupdate':
+        index = find_task(tool_input.get('taskId'))
+        if index is None:
+            return
+        if tool_input.get('status') == 'deleted':
+            todos.pop(index)
+            move_tasks(lambda i: -1 if i == index else (i - 1 if i > index else i))
+            return
+        todo = todos[index]
+        if tool_input.get('status') in task_statuses:
+            todo['status'] = tool_input['status']
+        text = task_text(tool_input)
+        if text:
+            todo['content'] = text
+            todo.pop('activeForm', None)
+        if isinstance(tool_input.get('activeForm'), str):
+            todo['activeForm'] = tool_input['activeForm']
+
+
+# A subagent's log lives at <session>/subagents/agent-<id>.jsonl. Its id reaches
+# the main transcript only with the launch result, which for a foreground agent
+# arrives when it finishes, so the agent-<id>.meta.json files (each naming the
+# launching toolUseId) are the fallback for agents still running.
+_AGENT_ID_RE = re.compile(r'^[\w-]{1,64}$')
+subagents_dir = os.path.join(os.path.dirname(path), os.path.basename(path)[:-len('.jsonl')] if path.endswith('.jsonl') else os.path.basename(path), 'subagents')
+_agent_ids_by_launch = None
+
+
+def agent_id_for(entry):
+    global _agent_ids_by_launch
+    if entry.get('agent_id'):
+        return entry['agent_id']
+    if _agent_ids_by_launch is None:
+        _agent_ids_by_launch = {}
+        try:
+            names = [n for n in os.listdir(subagents_dir) if n.startswith('agent-') and n.endswith('.meta.json')]
+        except OSError:
+            names = []
+        for name in names[:500]:
+            try:
+                with open(os.path.join(subagents_dir, name), 'r') as meta_file:
+                    meta = json.load(meta_file)
+            except Exception:
+                continue
+            if isinstance(meta, dict) and isinstance(meta.get('toolUseId'), str):
+                _agent_ids_by_launch[meta['toolUseId']] = name[len('agent-'):-len('.meta.json')]
+    return _agent_ids_by_launch.get(entry.get('id'))
+
+
+# The effort a subagent runs at is recorded on its first assistant row.
+def subagent_effort(agent_id):
+    if not isinstance(agent_id, str) or not _AGENT_ID_RE.match(agent_id):
+        return ''
+    log_path = os.path.join(subagents_dir, 'agent-%s.jsonl' % agent_id)
+    if not os.path.isfile(log_path):
+        return ''
+    try:
+        with open(log_path, 'r') as log_file:
+            for raw in log_file:
+                try:
+                    row = json.loads(raw)
+                except Exception:
+                    continue
+                if isinstance(row, dict) and row.get('type') == 'assistant':
+                    return clean(row.get('effort'), 20)
+    except OSError:
+        pass
+    return ''
 
 
 try:
@@ -2245,10 +2386,8 @@ try:
                         entry['desc'] = clean(tool_input.get('description') or tool_input.get('prompt'), 50)
                         entry['atype'] = clean(tool_input.get('subagent_type'), 30) or 'agent'
                         entry['amodel'] = clean(tool_input.get('model'), 20)
-                    if low == 'todowrite' and isinstance(tool_input, dict):
-                        todos = tool_input.get('todos')
-                        if isinstance(todos, list):
-                            latest_todos = todos
+                    if low in task_tools and isinstance(tool_input, dict):
+                        apply_task_tool(low, tool_input, entry['id'])
                     tools.append(entry)
                     if entry['id']:
                         tools_by_id[entry['id']] = entry
@@ -2261,6 +2400,7 @@ try:
                         agent_id = launch.get('agentId')
                         if isinstance(agent_id, str) and agent_id:
                             agent_launches[agent_id] = tool_id
+                            tools_by_id[tool_id]['agent_id'] = agent_id
 except Exception:
     pass
 
@@ -2286,10 +2426,10 @@ if speed_seconds is not None and 0.5 <= speed_seconds <= 600 and speed_tokens >=
     print('SPEED\t%.1f' % (speed_tokens / speed_seconds))
 
 # Activity groups: newest first, consecutive completed calls of the same tool
-# collapsed into one "×N" group. Agents and TodoWrite have their own lines.
+# collapsed into one "×N" group. Agents and the to-do tools have their own lines.
 groups = []
 for entry in reversed(tools):
-    if entry.get('agent') or entry['low'] == 'todowrite':
+    if entry.get('agent') or entry['low'] in task_tools:
         continue
     status = 'done' if entry['done'] else 'run'
     if groups and status == 'done' and groups[-1]['status'] == 'done' and groups[-1]['name'] == entry['name']:
@@ -2306,14 +2446,15 @@ for group in groups:
 
 for entry in tools:
     if entry.get('agent') and not entry['done']:
-        print(f"AGENT\t{entry['epoch']}\t{entry['atype']}\t{entry['amodel']}\t{entry['desc']}")
+        effort = subagent_effort(agent_id_for(entry))
+        print(f"AGENT\t{entry['epoch']}\t{entry['atype']}\t{entry['amodel']}\t{entry['desc']}\t{effort}")
 
-if latest_todos:
-    total = len(latest_todos)
-    completed = sum(1 for t in latest_todos if isinstance(t, dict) and t.get('status') == 'completed')
-    current = next((t for t in latest_todos if isinstance(t, dict) and t.get('status') == 'in_progress'), None)
+if todos:
+    total = len(todos)
+    completed = sum(1 for t in todos if t.get('status') == 'completed')
+    current = next((t for t in todos if t.get('status') == 'in_progress'), None)
     if current is None:
-        current = next((t for t in latest_todos if isinstance(t, dict) and t.get('status') == 'pending'), None)
+        current = next((t for t in todos if t.get('status') == 'pending'), None)
     text = ''
     if isinstance(current, dict):
         text = clean(current.get('activeForm') or current.get('content'), 60)
@@ -2371,9 +2512,13 @@ PYEOF
                     activity_value="${activity_value}${_act}"
                     ;;
                 AGENT)
-                    # _a start epoch, _b subagent type, _c model, _d description
+                    # _a start epoch, _b subagent type, _c model, _d description, _e effort
                     _ag="${ORANGE}◐${RESET} ${CYAN}${_b}${RESET}"
-                    [ -n "$_c" ] && _ag="${_ag} ${C_MUTED}[${_c}]${RESET}"
+                    _ag_tags="$_c"
+                    if [ "$cfg_show_agent_effort" = "1" ] && [ -n "$_e" ]; then
+                        _ag_tags="${_ag_tags:+${_ag_tags} · }${_e}"
+                    fi
+                    [ -n "$_ag_tags" ] && _ag="${_ag} ${C_MUTED}[${_ag_tags}]${RESET}"
                     [ -n "$_d" ] && _ag="${_ag}${C_LABEL}:${RESET} ${_d}"
                     if is_num "$_a"; then
                         _el=$(fmt_elapsed_s $(( _now_epoch - _a )))
