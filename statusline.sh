@@ -1968,6 +1968,7 @@ import json
 import os
 import re
 import sys
+import unicodedata
 from datetime import datetime
 
 path = sys.argv[1]
@@ -2008,10 +2009,25 @@ _ESC_RE = re.compile(r'\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?|\x1b\[[0-9;?]*[ -/]*[@
 _CTRL_RE = re.compile('[\x00-\x1f\x7f-\x9f‎‏‪-‮⁦-⁩]')
 
 
+# Marks that attach to the character before them: accents, emoji variation
+# selectors and skin tones, flag tag characters, and the zero-width joiner that
+# glues multi-part emoji together.
+def joins_previous(char):
+    return (unicodedata.category(char).startswith('M') or char == '‍'
+            or '︀' <= char <= '️' or '\U0001f3fb' <= char <= '\U0001f3ff'
+            or '\U000e0020' <= char <= '\U000e007f')
+
+
 def clean(text, limit):
     if not isinstance(text, str):
         return ''
-    return _CTRL_RE.sub(' ', _ESC_RE.sub('', text)).strip()[:limit]
+    text = _CTRL_RE.sub(' ', _ESC_RE.sub('', text)).strip()
+    if len(text) <= limit:
+        return text
+    cut = limit
+    while cut > 0 and (joins_previous(text[cut]) or text[cut - 1] == '‍'):
+        cut -= 1
+    return text[:cut]
 
 
 def to_seconds(timestamp):
@@ -2110,7 +2126,11 @@ try:
             if finished_id in tools_by_id:
                 tools_by_id[finished_id]['done'] = True
             row_epoch = to_seconds(obj.get('timestamp'))
-            msg = obj.get('message') or {}
+            # Newer Claude Code also writes api-request-blob rows: copies of
+            # earlier messages. Reading them would count each replayed tool call
+            # and token again and reopen finished tools as running.
+            msg = obj.get('message') if obj.get('type') in (None, 'assistant', 'user') else None
+            msg = msg if isinstance(msg, dict) else {}
             role = msg.get('role')
             content = msg.get('content')
             if role == 'assistant':

@@ -365,6 +365,31 @@ transcript_payload() {
     [[ "$plain" == *"Todo: ▸ Fixing auth bug (1/3)"* ]]
 }
 
+@test "replayed api-request-blob rows are not counted or reopened as running" {
+    echo '{"preset":"full"}' > "$HOME/.claude/super-status/config.json"
+    write_transcript
+    cat >> "$BATS_TEST_TMPDIR/transcript.jsonl" <<'EOF'
+{"type":"api-request-blob","hash":"h1","message":{"role":"assistant","usage":{"input_tokens":9000,"output_tokens":9000},"content":[{"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"/x/auth.ts"}}]}}
+EOF
+    run_statusline "$(transcript_payload)"
+    plain=$(strip_ansi "$output")
+    [[ "$plain" == *"Calls 6 (Read 3, Code 1, Other 2)"* ]]
+    [[ "$plain" == *"Tok 3.5k/1.2k"* ]]
+    [[ "$plain" == *"Activity: ◐ Edit: auth.ts | ✓ Grep: foo | ✓ Read ×2"* ]]
+}
+
+@test "truncated agent descriptions never split an emoji or an accented letter" {
+    echo '{"preset":"full"}' > "$HOME/.claude/super-status/config.json"
+    pad=$(printf 'a%.0s' {1..48})
+    printf '{"timestamp":"2026-07-17T10:00:00.000Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"e1","name":"Task","input":{"description":"%s\\ud83d\\udc68\\u200d\\ud83d\\udc69\\u200d\\ud83d\\udc67 x","subagent_type":"Explore"}},{"type":"tool_use","id":"e2","name":"Task","input":{"description":"%sbe\\u0301 x","subagent_type":"Plan"}}]}}\n' \
+        "$pad" "$pad" > "$BATS_TEST_TMPDIR/transcript.jsonl"
+    run_statusline "$(transcript_payload)"
+    plain=$(strip_ansi "$output")
+    [[ "$plain" == *"Explore: ${pad} ("* ]]
+    [[ "$plain" == *"Plan: ${pad}b ("* ]]
+    [[ "$plain" != *$'‍'* ]]
+}
+
 # --- e2e: git enrichment ----------------------------------------------------
 
 @test "git dirty marker and file stats appear on a dirty repo" {
