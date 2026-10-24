@@ -180,6 +180,23 @@ SUBSCRIPTION_PAYLOAD='{"model":{"display_name":"Opus"},"workspace":{"project_dir
     [[ "$plain" != *"SUBSCRIPTION START DATE"* ]]
 }
 
+@test "an elapsed subscription cycle pins the bar at 100% and shows the ENDED reminder" {
+    echo '{"subscription_start_date": "01/01/2020"}' > "$HOME/.claude/super-status/config.json"
+    run_statusline "$SUBSCRIPTION_PAYLOAD"
+    plain=$(strip_ansi "$output")
+    [[ "$plain" == *"Sub "*" 100%"* ]]
+    [[ "$plain" == *"SUBSCRIPTION CYCLE HAS ENDED"* ]]
+}
+
+@test "an active subscription cycle shows no ENDED reminder and renders after the 5h bar" {
+    today=$(date +%d/%m/%Y)
+    echo "{\"subscription_start_date\": \"$today\"}" > "$HOME/.claude/super-status/config.json"
+    run_statusline "$SUBSCRIPTION_PAYLOAD"
+    plain=$(strip_ansi "$output")
+    [[ "$plain" != *"SUBSCRIPTION CYCLE HAS ENDED"* ]]
+    [[ "$plain" == *"5h "*"Sub "* ]]
+}
+
 @test "subscription mode with an invalid start date shows the INVALID reminder" {
     echo '"subscription_start_date": "31/02/2026"' > "$HOME/.claude/CLAUDE.md"
     run_statusline "$SUBSCRIPTION_PAYLOAD"

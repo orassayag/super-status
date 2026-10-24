@@ -120,7 +120,7 @@ LOC ~14.2k | Session 1h30m | Thinking 1m38s | Eff A(100) | Calls 9 (Bash 1, Read
 ```
 
 - **Line 1 — identity:** model (accent color), `repo:branch`, lines added/removed this session (hidden when both are zero), Claude Code version.
-- **Line 2 — usage bars:** subscription cycle, 5-hour window, weekly window — each as `label bar % reset`.
+- **Line 2 — usage bars:** 5-hour window, weekly window, subscription cycle — each as `label bar % reset`.
 - **Line 3 — session cost:** context usage, cache-reuse %, session cost, cumulative in/out tokens.
 - **Line 4 — diagnostics:** all muted gray — project LOC, session/thinking time, efficiency grade, and one consolidated tool-call clause.
 
@@ -457,10 +457,16 @@ SUBSCRIPTION START DATE IS MISSING - SET "subscription_start_date": "dd/MM/yyyy"
 
 **If the key is present but the value isn't a real dd/MM/yyyy date** (wrong format, or an impossible date like `31/02/2026`), the same line appears with `INVALID` instead of `MISSING`. Note that an invalid value is reported as-is — it does **not** fall back to the next source (`config.json` → local `CLAUDE.md` → global `CLAUDE.md`), since a broken local value is almost certainly a typo you'd want to know about rather than silently mask.
 
-**Once a valid date is found**, the warning disappears and the `Sub` bar renders at the start of the usage-bar line:
+**Once a valid date is found**, the warning disappears and the `Sub` bar renders at the end of the usage-bar line:
 
 ```
 Sub ▮▮▮▮▮▮▪▪▪▪ 62% Reset 14d (08/08)
+```
+
+**Once the cycle has fully elapsed** (the `Sub` bar reaches 100%), the bar stays pinned at 100% and a bold red reminder joins the top of the statusline until you renew with `/super-status:subscribe`:
+
+```
+SUBSCRIPTION CYCLE HAS ENDED - RUN /super-status:subscribe OR SET "subscription_start_date": "dd/MM/yyyy" IN SUPER-STATUS/CONFIG.JSON
 ```
 
 This whole feature is subscription-mode only — API-key and OpenRouter users have no monthly cycle to track, so for them there's no warning, no bar, and no CLAUDE.md reads at all.
@@ -598,7 +604,7 @@ It traces where each value came from — whether the rate-limit windows came fro
 
 **The `5h`/`Nd` bars or `Tok` show nothing even though I'm on a subscription plan** — this is expected before your first message exchange in a session; see **Live updates** above. It should appear after your next turn.
 
-**A bold red `SUBSCRIPTION START DATE IS MISSING/INVALID` line appears at the top** — that's the subscription-cycle feature asking for its one-time setup; see **Subscription tracking setup** above for the `config.json` key to set and the dd/MM/yyyy format it requires.
+**A bold red `SUBSCRIPTION START DATE IS MISSING/INVALID` or `SUBSCRIPTION CYCLE HAS ENDED` line appears at the top** — that's the subscription-cycle feature asking for its one-time setup; see **Subscription tracking setup** above for the `config.json` key to set and the dd/MM/yyyy format it requires.
 
 **`5h` shows a percentage over 100%** — expected; see **Live updates** above. Not a bug in this script.
 

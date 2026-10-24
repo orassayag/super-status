@@ -196,8 +196,8 @@ cfg_color_bar_empty=""
 # Layout presets: lines separated by "|", segments within a line by ",".
 # A custom "lines" array in config.json overrides either preset, which is how
 # element reordering and merging elements onto shared lines is expressed.
-LAYOUT_EXPANDED="mode,model,agent,repo,branch,cwd,worktree,lines_changed,version,session_name|added_dirs|subscription,sessions,balance|context,cache_ratio,prompt_cache,cost,today,week,total_tokens|loc,session_time,thinking_time,speed,efficiency,tool_calls,compactions|activity|agents|todos|orchestrator"
-LAYOUT_COMPACT="mode,model,agent,repo,branch,cwd,worktree,added_dirs,context|subscription,sessions,balance,cost,today,week|activity,agents,todos,orchestrator"
+LAYOUT_EXPANDED="mode,model,agent,repo,branch,cwd,worktree,lines_changed,version,session_name|added_dirs|sessions,balance,subscription|context,cache_ratio,prompt_cache,cost,today,week,total_tokens|loc,session_time,thinking_time,speed,efficiency,tool_calls,compactions|activity|agents|todos|orchestrator"
+LAYOUT_COMPACT="mode,model,agent,repo,branch,cwd,worktree,added_dirs,context|sessions,balance,cost,today,week,subscription|activity,agents,todos,orchestrator"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -1228,6 +1228,7 @@ case "$cfg_language" in
         L_LEFT="left"
         L_SUB_MISSING='SUBSCRIPTION START DATE IS MISSING - SET "subscription_start_date": "dd/MM/yyyy" IN SUPER-STATUS/CONFIG.JSON'
         L_SUB_INVALID='SUBSCRIPTION START DATE IS INVALID - SET "subscription_start_date": "dd/MM/yyyy" IN SUPER-STATUS/CONFIG.JSON'
+        L_SUB_ENDED='SUBSCRIPTION CYCLE HAS ENDED - RUN /super-status:subscribe OR SET "subscription_start_date": "dd/MM/yyyy" IN SUPER-STATUS/CONFIG.JSON'
         L_BAL_AS_OF="as of"
         L_BAL_ESTIMATE="est."
         L_BAL_DECLARED="declared"
@@ -2479,6 +2480,7 @@ if [ "$IS_SUBSCRIPTION" -eq 1 ] && [ "$cfg_show_subscription" = "1" ]; then
                 _sub_bar=$(render_bar "$_sub_pct" "$_sub_color")
                 _sub_reset_marker=$(format_reset_marker "$_cycle_end")
                 subscription_value="${_sub_bar} ${_sub_color}${_sub_pct}%${RESET} $(muted "${L_RESET} ${_sub_days_left}d${_sub_reset_marker:+ (${_sub_reset_marker})}")"
+                [ "$_sub_pct" -ge 100 ] && subscription_warning_line="${BOLD_RED}${L_SUB_ENDED}${RESET}"
             fi
             ;;
     esac
