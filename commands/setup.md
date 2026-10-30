@@ -12,7 +12,7 @@ bash "${CLAUDE_PLUGIN_ROOT}/install.sh"
 Run that exact command with the Bash tool. It copies `statusline.sh` and
 `doctor.sh` into `~/.claude/super-status/`, makes them executable, and patches
 the `statusLine` entry in `~/.claude/settings.json` (backing the file up
-first, preserving any existing `refreshInterval`, defaulting it to 2 seconds).
+first, preserving any existing `refreshInterval`, defaulting it to 2 seconds, or 30 on Git Bash/MSYS2).
 
 After it succeeds, tell the user:
 1. The statusline is installed; they must open a **new** Claude Code session

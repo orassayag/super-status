@@ -42,3 +42,15 @@ install_script() { # $1 = config folder
     [ "$(jq -r '.statusLine.command' "$CLAUDE_CONFIG_DIR/settings.json" | tr -d '\r')" = "/bin/bash $CLAUDE_CONFIG_DIR/super-status/statusline.sh" ]
     [ ! -f "$HOME/.claude/settings.json" ]
 }
+
+@test "doctor defaults refreshInterval to 30s on Git Bash and keeps an existing one" {
+    echo '{}' > "$HOME/.claude/settings.json"
+    OSTYPE=msys run bash -c 'export OSTYPE=msys; bash "$0"' "$REPO_ROOT/doctor.sh"
+    [ "$status" -eq 0 ]
+    [ "$(jq -r '.statusLine.refreshInterval' "$HOME/.claude/settings.json" | tr -d '\r')" = "30" ]
+
+    echo '{"statusLine":{"refreshInterval":5}}' > "$HOME/.claude/settings.json"
+    run bash "$REPO_ROOT/doctor.sh"
+    [ "$status" -eq 0 ]
+    [ "$(jq -r '.statusLine.refreshInterval' "$HOME/.claude/settings.json" | tr -d '\r')" = "5" ]
+}

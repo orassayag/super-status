@@ -84,12 +84,16 @@ echo "Backed up existing settings.json before patching."
 # Written back with `cat >` rather than `mv`: a settings.json that is a symlink
 # (a dotfiles repo) stays a link, and the file keeps its own permissions.
 # An existing refreshInterval is preserved; 2s is the recommended default.
+# Git Bash gets 30s: short intervals, worse with several sessions, can leave
+# it failing with "add_item ... failed, errno 1".
+default_interval=2
+case "${OSTYPE:-}" in msys*|cygwin*) default_interval=30 ;; esac
 # MSYS2_ARG_CONV_EXCL stops Git Bash on Windows rewriting the POSIX paths in
 # $cmd into C:/... form for a native jq.exe. It disables conversion for every
 # argument, so the file goes in on stdin rather than as a path jq.exe can't open.
 tmp=$(mktemp)
-if ! MSYS2_ARG_CONV_EXCL='*' jq --arg cmd "$EXPECTED_CMD" \
-   '.statusLine = {"type": "command", "command": $cmd, "refreshInterval": (.statusLine.refreshInterval // 2)}' \
+if ! MSYS2_ARG_CONV_EXCL='*' jq --arg cmd "$EXPECTED_CMD" --argjson interval "$default_interval" \
+   '.statusLine = {"type": "command", "command": $cmd, "refreshInterval": (.statusLine.refreshInterval // $interval)}' \
    < "$SETTINGS" > "$tmp"; then
     rm -f "$tmp"
     echo "✗ Could not patch $SETTINGS — jq failed; the backup is untouched next to it."

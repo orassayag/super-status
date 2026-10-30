@@ -342,6 +342,8 @@ super-status is a stateless script — it only knows what Claude Code hands it o
 
 To make the time fields update continuously instead of only on those events, add `"refreshInterval": 2` (or any value in seconds, minimum `1`) to the `statusLine` block in `~/.claude/settings.json` (the installers do this for you). This re-runs the script on a fixed timer in addition to the normal event triggers, so the clock keeps ticking even while Claude is idle or thinking. The script's warm-path render is a single `jq` pass over stdin plus cached transcript/git reads, so even `"refreshInterval": 1` is comfortable.
 
+> **Windows (Git Bash / MSYS2):** short `refreshInterval` values — worse with several sessions open — can leave Git Bash failing with `add_item ... failed, errno 1`. Leave `refreshInterval` unset or use `30` or more there. The installer and `doctor.sh` default to `30` on Git Bash, and never change a value you already set.
+
 ## What each field means
 
 ### Line 1 — Identity
