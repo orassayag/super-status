@@ -222,6 +222,16 @@ PAYLOAD_WITH_DIRS='{"model":{"display_name":"Opus"},"workspace":{"project_dir":"
     [[ "$(strip_ansi "$output")" == *"aver…"* ]]
 }
 
+@test "added dirs and session name cuts never split a flag or a joined emoji" {
+    write_config '{"display":{"added_dirs":true,"session_name":true},"added_dirs_layout":"line","added_dirs_name_width":5}'
+    pad=$(printf 'a%.0s' {1..39})
+    run_statusline "{\"model\":{\"display_name\":\"Opus\"},\"session_name\":\"${pad}\\ud83c\\uddee\\ud83c\\uddf1 tail\",\"workspace\":{\"project_dir\":\"/a/proj\",\"added_dirs\":[\"/x/abc\\ud83d\\udc68\\u200d\\ud83d\\udc69\\u200d\\ud83d\\udc67z\"]}}"
+    plain=$(strip_ansi "$output")
+    [[ "$plain" == *"Added dirs: abc…"* ]]
+    [[ "$plain" == *"“${pad}…”"* ]]
+    [[ "$plain" != *$'\u200d'* ]]
+}
+
 @test "added dirs render nothing when the display flag is off" {
     run_statusline "$PAYLOAD_WITH_DIRS"
     [[ "$(strip_ansi "$output")" != *"shared-lib"* ]]

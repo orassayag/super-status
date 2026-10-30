@@ -694,6 +694,54 @@ sanitize_text() {
     trim_ws "${_s//[[:cntrl:]]/ }"
 }
 
+# Matches the code points the Python joins_previous treats as continuing the
+# previous symbol (combining marks, ZWJ, variation selectors, skin tones, flag
+# tags), tested on the char's UTF-8 bytes because bash 3.2's printf "'c" yields
+# only the first byte. A lone continuation byte matches too, so a C-locale cut
+# never splits a multi-byte char either.
+_char_hex() {
+    local LC_ALL=C
+    local _c="$1" _i _b _h=""
+    for (( _i = 0; _i < ${#_c}; _i++ )); do
+        printf -v _b '%d' "'${_c:_i:1}"
+        [ "$_b" -lt 0 ] && _b=$(( _b + 256 ))
+        printf -v _b '%02x' "$_b"
+        _h="${_h}${_b}"
+    done
+    REPLY="$_h"
+}
+
+joins_previous() {
+    _char_hex "$1"
+    case "$REPLY" in
+        e2808d|cc??|cd[89a]?|e1b7??|e283[9ab]?|efb88?|efb8a?|f09f8fb[b-f]|f3a080[ab]?|f3a081[89ab]?|[89ab]?) return 0 ;;
+    esac
+    return 1
+}
+
+is_regional_indicator() {
+    _char_hex "$1"
+    case "$REPLY" in f09f87a[6-9a-f]|f09f87b?) return 0 ;; esac
+    return 1
+}
+
+# Cuts the variable named $1 to at most $2 chars plus "…", stepping back so the
+# cut never lands inside a joined emoji, an accented letter or a flag.
+cut_label() {
+    local _s="${!1}" _n="$2" _k=0
+    [ "${#_s}" -gt "$_n" ] || return 0
+    while [ "$_n" -gt 0 ] && { joins_previous "${_s:_n:1}" || [ "${_s:_n-1:1}" = $'\xe2\x80\x8d' ]; }; do
+        _n=$(( _n - 1 ))
+    done
+    if is_regional_indicator "${_s:_n:1}"; then
+        while [ $(( _n - _k )) -gt 0 ] && is_regional_indicator "${_s:_n-_k-1:1}"; do
+            _k=$(( _k + 1 ))
+        done
+        [ $(( _k % 2 )) -eq 1 ] && _n=$(( _n - 1 ))
+    fi
+    printf -v "$1" '%s…' "${_s:0:_n}"
+}
+
 # OSC 8 terminal hyperlink around $2, addressed by $1. The address is built
 # here from a path this script resolved, never passed through from outside, and
 # is percent-escaped and re-sanitized anyway: a hyperlink embeds its address in
@@ -2785,7 +2833,7 @@ fi
 
 seg_session_name=""
 if [ "$cfg_show_session_name" = "1" ] && [ -n "$session_name" ]; then
-    [ "${#session_name}" -gt 40 ] && session_name="${session_name:0:40}…"
+    cut_label session_name 40
     # shellcheck disable=SC1111
     seg_session_name="$(muted "“${session_name}”")"
 fi
@@ -3143,8 +3191,7 @@ if [ "$cfg_show_added_dirs" = "1" ] && [ "${#added_dirs[@]}" -gt 0 ]; then
         [ "$_ad_shown" -lt "$cfg_added_dirs_max" ] || break
         _ad_name=$(sanitize_text "$(path_tail "$_ad" 1)")
         [ -n "$_ad_name" ] || continue
-        [ "${#_ad_name}" -gt "$cfg_added_dirs_name_width" ] && \
-            _ad_name="${_ad_name:0:$cfg_added_dirs_name_width}…"
+        cut_label _ad_name "$cfg_added_dirs_name_width"
         _ad_names+=("$_ad_name")
         _ad_shown=$(( _ad_shown + 1 ))
     done
