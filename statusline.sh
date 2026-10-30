@@ -1620,7 +1620,8 @@ resolve_account_mode() {
     fi
     case "$_billing" in
         prepaid|invoice) ACCOUNT_MODE_KIND="api" ;;
-        subscription)    ACCOUNT_MODE_KIND="subscription" ;;
+        # Claude Code records the payment channel too ("stripe_subscription").
+        *subscription)   ACCOUNT_MODE_KIND="subscription" ;;
     esac
     # stdin's rate_limits only ever accompany a subscription, so they settle the
     # kind when ~/.claude.json is missing (fresh machine, or a sandboxed HOME).

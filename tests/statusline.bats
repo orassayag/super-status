@@ -971,6 +971,16 @@ seed_spend() { # $1 dd/MM/yyyy, $2 dollars spent, $3 source (admin|local, defaul
     [[ "$(strip_ansi "$output")" != *"Bal"* ]]
 }
 
+@test "a stripe_subscription account with no rate_limits on stdin hides the credit bar" {
+    write_oauth_account '"stripe_subscription"' 'null'
+    seed_spend "01/09/2026" "603.29"
+    echo '{"api_credit_balance":77.23,"api_credit_as_of":"01/09/2026"}' > "$HOME/.claude/super-status/config.json"
+    run_statusline "$MINIMAL_PAYLOAD"
+    plain=$(strip_ansi "$output")
+    [[ "$plain" != *"Bal"* ]]
+    [[ "$plain" == *"Sub | ◆ Opus"* ]]
+}
+
 @test "declaring no balance leaves the credit bar off entirely" {
     write_oauth_account '"prepaid"' 'null'
     run_statusline "$MINIMAL_PAYLOAD"
