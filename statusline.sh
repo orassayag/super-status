@@ -2050,6 +2050,7 @@ remaining_k=$(( remaining_tokens / 1000 ))
 # ---------------------------------------------------------------------------
 session_total_input=""; session_total_output=""
 transcript_model=""
+transcript_effort=""
 tool_calls_total=""
 bucket_skills=""; bucket_code=""; bucket_commands=""
 bucket_read=""; bucket_mcp=""; bucket_other=""
@@ -2063,7 +2064,8 @@ speed_value=""
 _need_transcript=0
 for _flag in "$cfg_show_total_tokens" "$cfg_show_tool_calls" "$cfg_show_efficiency" \
              "$cfg_show_activity" "$cfg_show_agents" "$cfg_show_todos" \
-             "$cfg_show_compactions" "$cfg_show_prompt_cache" "$cfg_show_speed"; do
+             "$cfg_show_compactions" "$cfg_show_prompt_cache" "$cfg_show_speed" \
+             "$cfg_show_effort"; do
     [ "$_flag" = "1" ] && _need_transcript=1
 done
 [ "$_want_transcript_model" -eq 1 ] && _need_transcript=1
@@ -2108,6 +2110,10 @@ task_index = {}
 next_task_id = 1
 task_statuses = {'pending', 'in_progress', 'completed'}
 latest_model = ''
+# A mod such as effortless rewrites each request's effort as it is sent, so the
+# app's .effort.level keeps showing the /effort setting; the transcript row
+# records the effort the request actually ran at.
+latest_effort = ''
 compactions = 0
 # Prompt-cache expiry and output speed are both read off the newest MAIN-session
 # assistant message. Sub-agent responses (isSidechain) are excluded on purpose:
@@ -2399,6 +2405,8 @@ try:
                 out = usage.get('output_tokens')
                 if isinstance(out, (int, float)):
                     total_out += out
+                if not obj.get('isSidechain') and isinstance(obj.get('effort'), str) and obj.get('effort'):
+                    latest_effort = clean(obj.get('effort'), 20)
                 if not obj.get('isSidechain') and row_epoch is not None:
                     last_main_assistant_epoch = row_epoch
                     creation = usage.get('cache_creation') or {}
@@ -2520,6 +2528,8 @@ except Exception:
 print(f'TOKENS\x1f{int(total_in)}\x1f{int(total_out)}')
 if latest_model:
     print(f'MODEL\x1f{latest_model}')
+if latest_effort:
+    print(f'EFFORT\x1f{latest_effort}')
 print(f'BUCKET\x1fTOTAL\x1f{sum(buckets.values())}')
 for key, count in buckets.items():
     print(f'BUCKET\x1f{key}\x1f{count}')
@@ -2586,6 +2596,8 @@ PYEOF
                     session_total_input="$_a"; session_total_output="$_b" ;;
                 MODEL)
                     transcript_model="$_a" ;;
+                EFFORT)
+                    transcript_effort="$_a" ;;
                 COMPACTIONS)
                     is_num "$_a" && compactions_count="$_a" ;;
                 CACHEEXP)
@@ -2658,6 +2670,7 @@ fi
 # Override the displayed model name with the real one from the transcript when
 # model_source asked for it and the transcript actually named a model. Raw ids
 # (claude-sonnet-4-6-20250101) are humanized to "Claude Sonnet 4.6".
+[ -n "$transcript_effort" ] && effort_level=$(sanitize_text "$transcript_effort")
 if [ "$_want_transcript_model" -eq 1 ] && [ -n "$transcript_model" ]; then
     model=$(humanize_model_id "$transcript_model")
 elif [[ "$model" =~ ^(claude|gemini)- ]]; then

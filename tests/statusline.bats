@@ -596,6 +596,16 @@ EOF
     [[ "$plain" == *"◆ Opus [High]"* ]]
 }
 
+@test "the effort the last main reply ran at wins over the payload's effort.level" {
+    printf '%s\n' '{"type":"assistant","effort":"high","message":{"role":"assistant","content":[]}}' \
+        '{"type":"assistant","isSidechain":true,"effort":"low","message":{"role":"assistant","content":[]}}' \
+        > "$BATS_TEST_TMPDIR/transcript.jsonl"
+    payload=$(transcript_payload | sed 's/"model":/"effort":{"level":"medium"},"model":/')
+    run_statusline "$payload"
+    plain=$(strip_ansi "$output")
+    [[ "$plain" == *"◆ Opus [High]"* ]]
+}
+
 @test "no effort field in the payload shows no effort badge" {
     run bash -c "printf '%s' \"\$1\" | bash \"\$2\"" _ "$MINIMAL_PAYLOAD" "$SCRIPT"
     plain=$(strip_ansi "$output")
