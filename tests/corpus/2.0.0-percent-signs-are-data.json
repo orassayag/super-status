@@ -1,0 +1,22 @@
+{
+  "why": "Literal % in a value must print as itself, never as a printf format.",
+  "config": {
+    "display": {
+      "session_name": true
+    }
+  },
+  "payload": {
+    "model": {
+      "display_name": "Opus"
+    },
+    "session_name": "100% %s %d done",
+    "workspace": {
+      "project_dir": "/a/b"
+    }
+  },
+  "expect": {
+    "contains": [
+      "100% %s %d done"
+    ]
+  }
+}

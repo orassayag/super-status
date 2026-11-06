@@ -626,6 +626,92 @@ PY
     [[ "$joined" != *"trusted"* ]] || false
 }
 
+@test "a repository filter name that cannot be overridden turns git off for it" {
+    repo="$BATS_TEST_TMPDIR/odd-filter"
+    marker="$BATS_TEST_TMPDIR/pwned-odd"
+    mkdir -p "$repo"
+    git -C "$repo" init -q -b main
+    git -C "$repo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+    printf '#!/bin/sh\ntouch "%s"\ncat\n' "$marker" > "$BATS_TEST_TMPDIR/evil-odd.sh"
+    chmod +x "$BATS_TEST_TMPDIR/evil-odd.sh"
+    git -C "$repo" config 'filter.a=b.clean' "$BATS_TEST_TMPDIR/evil-odd.sh"
+    git -C "$repo" config 'filter.a=b.required' true
+    echo '* filter=a=b' > "$repo/.gitattributes"
+    echo x > "$repo/file.txt"
+    write_config '{"preset":"full","display":{"lines_changed":true}}'
+    payload="{\"model\":{\"display_name\":\"Opus\"},\"session_id\":\"g2\",\"cwd\":\"$repo\",\"workspace\":{\"project_dir\":\"$repo\"}}"
+    run_statusline "$payload"
+    [ "$status" -eq 0 ]
+    [[ "$(strip_ansi "$output")" != *":main"* ]] || false
+    [ ! -e "$marker" ]
+}
+
+@test "git_safe_init marks a repository unsafe only for an odd local filter name" {
+    repo="$BATS_TEST_TMPDIR/odd-names"
+    mkdir -p "$repo"
+    git -C "$repo" init -q
+    git -C "$repo" config filter.plain_name-1.2.clean "cmd"
+    git_safe_init "$repo"
+    [ "$GIT_REPO_UNSAFE" = "0" ]
+    git -C "$repo" config 'filter.has space.clean' "cmd"
+    git_safe_init "$repo"
+    [ "$GIT_REPO_UNSAFE" = "1" ]
+    run git_run -C "$repo" rev-parse --show-toplevel
+    [ "$status" -ne 0 ]
+    [ -z "$output" ]
+}
+
+@test "git_run turns off lazy fetch and every transport" {
+    stub="$BATS_TEST_TMPDIR/netstub"
+    mkdir -p "$stub"
+    printf '#!/bin/sh\nprintf "%%s|%%s" "$GIT_NO_LAZY_FETCH" "$*"\n' > "$stub/git"
+    chmod +x "$stub/git"
+    output=$(PATH="$stub:$PATH" git_run status)
+    [ "${output%%|*}" = "1" ]
+    [[ "$output" == *"-c protocol.allow=never"* ]] || false
+}
+
+# --- config value warnings ----------------------------------------------------
+
+@test "an unusable config value is named on one warning line" {
+    write_config '{"layout":"compakt","bar_width":100,"colors":{"model":"purpel"}}'
+    run_statusline '{"model":{"display_name":"Opus"},"workspace":{"project_dir":"/a/b"}}'
+    [ "$status" -eq 0 ]
+    plain=$(strip_ansi "$output")
+    [[ "$plain" == *'CONFIG VALUE IGNORED: "layout" (AND 2 MORE) - FIX IT WITH /super-status:configure'* ]] || false
+    [ "$(grep -c 'CONFIG VALUE IGNORED' <<< "$plain")" -eq 1 ]
+}
+
+@test "a nested config value is named the way it is written in config.json" {
+    write_config '{"git":{"timeout_seconds":0}}'
+    run_statusline '{"model":{"display_name":"Opus"},"workspace":{"project_dir":"/a/b"}}'
+    [[ "$(strip_ansi "$output")" == *'"git.timeout_seconds" - FIX'* ]] || false
+}
+
+@test "valid and null config values raise no warning" {
+    write_config '{"preset":"full","layout":"compact","bar_width":null,"colors":{"model":"#00ff00"},"display":{"cwd":false},"thresholds":{"context_warning":60}}'
+    run_statusline '{"model":{"display_name":"Opus"},"workspace":{"project_dir":"/a/b"}}'
+    [ "$status" -eq 0 ]
+    [[ "$(strip_ansi "$output")" != *"CONFIG"* ]] || false
+}
+
+# --- missing jq -----------------------------------------------------------------
+
+@test "without jq the statusline says so instead of rendering wrong numbers" {
+    run env PATH="$BATS_TEST_TMPDIR/no-tools" /bin/bash -c "printf '%s' '{\"model\":{\"display_name\":\"Opus\"}}' | /bin/bash \"\$1\"" _ "$SCRIPT"
+    [ "$status" -eq 0 ]
+    [[ "$(strip_ansi "$output")" == "super-status: jq is not installed - brew install jq / apt install jq" ]] || false
+}
+
+# --- last payload -----------------------------------------------------------------
+
+@test "each render keeps its input as last-payload.json in the private cache" {
+    payload='{"model":{"display_name":"Opus"},"workspace":{"project_dir":"/a/b"}}'
+    run_statusline "$payload"
+    [ "$(cat "$XDG_CACHE_HOME/super-status/last-payload.json")" = "$payload" ]
+    [ -z "$(find "$XDG_CACHE_HOME/super-status" -name 'last-payload.json.*')" ]
+}
+
 # --- background agents --------------------------------------------------------
 
 write_background_transcript() { # $1 = path

@@ -1,0 +1,21 @@
+{
+  "why": "A valid config.json with an unusable value was ignored without a word.",
+  "config": {
+    "layout": "compakt",
+    "bar_width": 100
+  },
+  "payload": {
+    "model": {
+      "display_name": "Opus"
+    },
+    "workspace": {
+      "project_dir": "/a/b"
+    }
+  },
+  "expect": {
+    "contains": [
+      "CONFIG VALUE IGNORED: \"layout\" (AND 1 MORE)",
+      "/super-status:configure"
+    ]
+  }
+}

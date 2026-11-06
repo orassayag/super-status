@@ -979,31 +979,50 @@ fi
 # (core.fsmonitor, filter drivers), so opening a hostile clone would run its
 # command on every render; fsmonitor is always off, and GIT_SAFE_ARGS carries
 # the per-repository filter overrides from git_safe_init.
+# A partial clone fetches missing objects on its own through a transport the
+# repository's config can name, so lazy fetch and every transport are off too.
+# GIT_REPO_UNSAFE is set by git_safe_init for a repository whose drivers cannot
+# be overridden; every call then fails, the same as having no repository.
 GIT_SAFE_ARGS=()
+GIT_REPO_UNSAFE=0
 git_run() {
+    [ "$GIT_REPO_UNSAFE" = "1" ] && return 1
     # shellcheck disable=SC2086  # deliberate split: empty when no timeout exists
-    GIT_OPTIONAL_LOCKS=0 GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=Never \
+    GIT_OPTIONAL_LOCKS=0 GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=Never GIT_NO_LAZY_FETCH=1 \
         ${GIT_TIMEOUT_CMD:+$GIT_TIMEOUT_CMD "$cfg_git_timeout"} \
-        git -c core.fsmonitor=false ${GIT_SAFE_ARGS[@]+"${GIT_SAFE_ARGS[@]}"} "$@" 2>/dev/null
+        git -c core.fsmonitor=false -c protocol.allow=never \
+            ${GIT_SAFE_ARGS[@]+"${GIT_SAFE_ARGS[@]}"} "$@" 2>/dev/null
 }
 
 # Blanks every filter driver defined outside global/system config, so only
 # helpers the user installed themselves (git-lfs) still run. Needs git 2.26+
 # for --show-scope; on older git the listing fails and no override is added.
+# A name outside [A-Za-z0-9._-] (an "=" above all) cannot be written as a
+# `-c filter.<name>.clean=` override, so such a repository is marked unsafe.
 git_safe_init() { # $1 = git root
-    local _scope _entry _key _name _seen=$'\n'
+    local _scope _entry _key _name _seen=$'\n' _unsafe=0
     GIT_SAFE_ARGS=()
+    GIT_REPO_UNSAFE=0
     while IFS= read -r -d '' _scope && IFS= read -r -d '' _entry; do
         case "$_scope" in global|system) continue ;; esac
         _key="${_entry%%$'\n'*}"
         _name="${_key#filter.}"
         _name="${_name%.*}"
-        if [ -z "$_name" ] || [ "$_name" = "$_key" ]; then continue; fi
+        [ "$_name" = "$_key" ] && continue
+        if [[ ! "$_name" =~ ^[A-Za-z0-9._-]+$ ]]; then
+            _unsafe=1
+            continue
+        fi
         [[ "$_seen" == *$'\n'"$_name"$'\n'* ]] && continue
         _seen+="$_name"$'\n'
         GIT_SAFE_ARGS+=(-c "filter.${_name}.clean=" -c "filter.${_name}.smudge=" \
                         -c "filter.${_name}.process=" -c "filter.${_name}.required=false")
     done < <(git_run -C "$1" config --show-scope -z --get-regexp '^filter\.')
+    if [ "$_unsafe" -eq 1 ]; then
+        GIT_SAFE_ARGS=()
+        GIT_REPO_UNSAFE=1
+        debug_log "git: repository filter name cannot be overridden; git segments off for $1"
+    fi
 }
 
 # Reads stdin until EOF, but gives up once a read waits $1 seconds with nothing
@@ -1037,6 +1056,15 @@ if [ "${SUPER_STATUS_DISABLE:-0}" = "1" ]; then
     exit 0
 fi
 
+# Every value on every line comes through jq; without it the render is not
+# empty but wrong ("Ctx 0%", no model). type -P, not command -v: under Git Bash
+# the jq wrapper function above would satisfy command -v with no binary behind it.
+if ! type -P jq >/dev/null 2>&1; then
+    read_stdin_bounded 2 > /dev/null
+    printf '%s\n' "${BOLD_RED}super-status: jq is not installed - brew install jq / apt install jq${RESET}"
+    exit 0
+fi
+
 input=$(read_stdin_bounded 2)
 
 # ---------------------------------------------------------------------------
@@ -1049,6 +1077,14 @@ if [ ! -d "$CACHE_ROOT" ]; then
     chmod 700 "$CACHE_ROOT" 2>/dev/null
 fi
 
+# The raw input of the latest render, for `doctor.sh --report`. Staged and
+# renamed so a report never reads a half-written payload.
+if [ -n "$input" ] && [ -d "$CACHE_ROOT" ]; then
+    { printf '%s' "$input" > "$CACHE_ROOT/last-payload.json.$$" \
+        && mv -f "$CACHE_ROOT/last-payload.json.$$" "$CACHE_ROOT/last-payload.json"; } 2>/dev/null \
+        || rm -f "$CACHE_ROOT/last-payload.json.$$" 2>/dev/null
+fi
+
 CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 
 # ---------------------------------------------------------------------------
@@ -1059,6 +1095,7 @@ CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 CONFIG_FILE="${SUPER_STATUS_CONFIG:-$CLAUDE_DIR/super-status/config.json}"
 CONFIG_MAX_BYTES=262144
 config_warning_line=""
+config_value_warning_line=""
 
 apply_preset() {
     local _v
@@ -1089,6 +1126,22 @@ apply_preset() {
             cfg_layout="compact"
             ;;
     esac
+}
+
+# Keys whose value was present but unusable, as the user wrote them in
+# config.json (dotted for nested objects), so the warning names what to edit.
+config_rejected=()
+config_reject() { # $1 = flattened key from the config jq pass
+    local _name="$1"
+    case "$_name" in
+        display_*) _name="display.${_name#display_}" ;;
+        color_*) _name="colors.${_name#color_}" ;;
+        threshold_*) _name="thresholds.${_name#threshold_}" ;;
+        push_warning_threshold|push_critical_threshold) _name="git.${_name}" ;;
+        git_timeout_seconds) _name="git.timeout_seconds" ;;
+        jj_enabled) _name="jj.enabled" ;;
+    esac
+    config_rejected+=("$_name")
 }
 
 if [ -f "$CONFIG_FILE" ]; then
@@ -1142,34 +1195,35 @@ if [ -f "$CONFIG_FILE" ]; then
     else
         while IFS=$'\t' read -r _k _v; do
             [ -n "$_k" ] || continue
+            [ -n "$_v" ] || continue
             case "$_k" in
-                preset) [ -n "$_v" ] && apply_preset "$_v" ;;
+                preset) case "$_v" in full|essential|minimal) apply_preset "$_v" ;; *) config_reject "$_k" ;; esac ;;
                 language) [ -n "$_v" ] && cfg_language="$_v" ;;
-                layout) case "$_v" in expanded|compact) cfg_layout="$_v" ;; esac ;;
-                bar_width) is_num "$_v" && [ "${_v%.*}" -ge 5 ] && [ "${_v%.*}" -le 60 ] && cfg_bar_width="${_v%.*}" ;;
+                layout) case "$_v" in expanded|compact) cfg_layout="$_v" ;; *) config_reject "$_k" ;; esac ;;
+                bar_width) if is_num "$_v" && [ "${_v%.*}" -ge 5 ] && [ "${_v%.*}" -le 60 ]; then cfg_bar_width="${_v%.*}"; else config_reject "$_k"; fi ;;
                 bar_filled) [ -n "$_v" ] && cfg_bar_filled="${_v:0:1}" ;;
                 bar_empty) [ -n "$_v" ] && cfg_bar_empty="${_v:0:1}" ;;
-                path_levels) is_num "$_v" && [ "${_v%.*}" -ge 1 ] && [ "${_v%.*}" -le 5 ] && cfg_path_levels="${_v%.*}" ;;
-                max_width) is_num "$_v" && [ "${_v%.*}" -ge 0 ] && cfg_max_width="${_v%.*}" ;;
-                context_value) case "$_v" in percent|tokens|remaining|both) cfg_context_value="$_v" ;; esac ;;
-                auto_compact_window) is_num "$_v" && [ "${_v%.*}" -ge 1000 ] && cfg_auto_compact_window="${_v%.*}" ;;
-                model_source) case "$_v" in stdin|transcript|auto) cfg_model_source="$_v" ;; esac ;;
+                path_levels) if is_num "$_v" && [ "${_v%.*}" -ge 1 ] && [ "${_v%.*}" -le 5 ]; then cfg_path_levels="${_v%.*}"; else config_reject "$_k"; fi ;;
+                max_width) if is_num "$_v" && [ "${_v%.*}" -ge 0 ]; then cfg_max_width="${_v%.*}"; else config_reject "$_k"; fi ;;
+                context_value) case "$_v" in percent|tokens|remaining|both) cfg_context_value="$_v" ;; *) config_reject "$_k" ;; esac ;;
+                auto_compact_window) if is_num "$_v" && [ "${_v%.*}" -ge 1000 ]; then cfg_auto_compact_window="${_v%.*}"; else config_reject "$_k"; fi ;;
+                model_source) case "$_v" in stdin|transcript|auto) cfg_model_source="$_v" ;; *) config_reject "$_k" ;; esac ;;
                 plan_label) [ -n "$_v" ] && cfg_plan_label=$(trim_ws "$_v") ;;
                 subscription_start_date) [ -n "$_v" ] && cfg_subscription_start_date=$(trim_ws "$_v") ;;
-                api_credit_balance) is_num "$_v" && cfg_api_credit_balance="$_v" ;;
+                api_credit_balance) if is_num "$_v"; then cfg_api_credit_balance="$_v"; else config_reject "$_k"; fi ;;
                 api_credit_as_of) [ -n "$_v" ] && cfg_api_credit_as_of=$(trim_ws "$_v") ;;
-                api_spend_cache_seconds) is_num "$_v" && [ "${_v%.*}" -ge 60 ] && cfg_api_spend_cache_seconds="${_v%.*}" ;;
+                api_spend_cache_seconds) if is_num "$_v" && [ "${_v%.*}" -ge 60 ]; then cfg_api_spend_cache_seconds="${_v%.*}"; else config_reject "$_k"; fi ;;
                 external_usage_path) [ -n "$_v" ] && cfg_external_usage_path="$_v" ;;
-                external_usage_max_age) is_num "$_v" && [ "${_v%.*}" -ge 0 ] && cfg_external_usage_max_age="${_v%.*}" ;;
+                external_usage_max_age) if is_num "$_v" && [ "${_v%.*}" -ge 0 ]; then cfg_external_usage_max_age="${_v%.*}"; else config_reject "$_k"; fi ;;
                 external_usage_write_path) [ -n "$_v" ] && cfg_external_usage_write_path="$_v" ;;
-                prompt_cache_ttl_seconds) is_num "$_v" && [ "${_v%.*}" -ge 60 ] && cfg_prompt_cache_ttl_seconds="${_v%.*}" ;;
-                hyperlinks) _b=$(to_bool "$_v") && cfg_hyperlinks="$_b" ;;
-                added_dirs_max) is_num "$_v" && [ "${_v%.*}" -ge 1 ] && [ "${_v%.*}" -le 20 ] && cfg_added_dirs_max="${_v%.*}" ;;
-                added_dirs_name_width) is_num "$_v" && [ "${_v%.*}" -ge 4 ] && [ "${_v%.*}" -le 80 ] && cfg_added_dirs_name_width="${_v%.*}" ;;
-                added_dirs_layout) case "$_v" in inline|line) cfg_added_dirs_layout="$_v" ;; esac ;;
+                prompt_cache_ttl_seconds) if is_num "$_v" && [ "${_v%.*}" -ge 60 ]; then cfg_prompt_cache_ttl_seconds="${_v%.*}"; else config_reject "$_k"; fi ;;
+                hyperlinks) if _b=$(to_bool "$_v"); then cfg_hyperlinks="$_b"; else config_reject "$_k"; fi ;;
+                added_dirs_max) if is_num "$_v" && [ "${_v%.*}" -ge 1 ] && [ "${_v%.*}" -le 20 ]; then cfg_added_dirs_max="${_v%.*}"; else config_reject "$_k"; fi ;;
+                added_dirs_name_width) if is_num "$_v" && [ "${_v%.*}" -ge 4 ] && [ "${_v%.*}" -le 80 ]; then cfg_added_dirs_name_width="${_v%.*}"; else config_reject "$_k"; fi ;;
+                added_dirs_layout) case "$_v" in inline|line) cfg_added_dirs_layout="$_v" ;; *) config_reject "$_k" ;; esac ;;
                 right_align) [ -n "$_v" ] && cfg_right_align="$_v" ;;
-                git_timeout_seconds) is_num "$_v" && [ "${_v%.*}" -ge 1 ] && [ "${_v%.*}" -le 60 ] && cfg_git_timeout="${_v%.*}" ;;
-                jj_enabled) _b=$(to_bool "$_v") && cfg_jj_enabled="$_b" ;;
+                git_timeout_seconds) if is_num "$_v" && [ "${_v%.*}" -ge 1 ] && [ "${_v%.*}" -le 60 ]; then cfg_git_timeout="${_v%.*}"; else config_reject "$_k"; fi ;;
+                jj_enabled) if _b=$(to_bool "$_v"); then cfg_jj_enabled="$_b"; else config_reject "$_k"; fi ;;
                 model_params_*)
                     _p="${_k#model_params_}"
                     if [ -n "$_p" ] && [ -n "$_v" ]; then
@@ -1185,10 +1239,10 @@ if [ -f "$CONFIG_FILE" ]; then
                     fi
                     ;;
                 lines) [ -n "$_v" ] && cfg_lines="$_v" ;;
-                push_warning_threshold) is_num "$_v" && cfg_push_warning="${_v%.*}" ;;
-                push_critical_threshold) is_num "$_v" && cfg_push_critical="${_v%.*}" ;;
+                push_warning_threshold) if is_num "$_v"; then cfg_push_warning="${_v%.*}"; else config_reject "$_k"; fi ;;
+                push_critical_threshold) if is_num "$_v"; then cfg_push_critical="${_v%.*}"; else config_reject "$_k"; fi ;;
                 display_*)
-                    _b=$(to_bool "$_v") || continue
+                    _b=$(to_bool "$_v") || { config_reject "$_k"; continue; }
                     case "${_k#display_}" in
                         model|mode|repo|branch|cwd|worktree|lines_changed|version|git_dirty|git_ahead_behind|git_file_stats|provider|effort|subscription|sessions|balance|context|cost|total_tokens|loc|session_time|thinking_time|cache_ratio|efficiency|tool_calls|activity|agents|agent_effort|todos|orchestrator|added_dirs|prompt_cache|today|week|session_name|usage_pace|compactions|speed)
                             printf -v "cfg_show_${_k#display_}" '%s' "$_b" ;;
@@ -1197,11 +1251,16 @@ if [ -f "$CONFIG_FILE" ]; then
                 color_*)
                     case "${_k#color_}" in
                         label|model|repo|branch|cwd|muted|accent|bar_filled|bar_empty)
-                            printf -v "cfg_color_${_k#color_}" '%s' "$_v" ;;
+                            if resolve_color "$_v" >/dev/null; then
+                                printf -v "cfg_color_${_k#color_}" '%s' "$_v"
+                            else
+                                config_reject "$_k"
+                            fi
+                            ;;
                     esac
                     ;;
                 threshold_*)
-                    is_num "$_v" || continue
+                    is_num "$_v" || { config_reject "$_k"; continue; }
                     case "${_k#threshold_}" in
                         context_warning) cfg_ctx_warn="${_v%.*}" ;;
                         context_critical) cfg_ctx_crit="${_v%.*}" ;;
@@ -1213,6 +1272,11 @@ if [ -f "$CONFIG_FILE" ]; then
                     ;;
             esac
         done <<< "$_cfg_out"
+        if [ "${#config_rejected[@]}" -gt 0 ]; then
+            _cfg_more=""
+            [ "${#config_rejected[@]}" -gt 1 ] && _cfg_more=" (AND $(( ${#config_rejected[@]} - 1 )) MORE)"
+            config_value_warning_line="${BOLD_RED}SUPER-STATUS CONFIG VALUE IGNORED: \"$(sanitize_text "${config_rejected[0]}")\"${_cfg_more} - FIX IT WITH /super-status:configure${RESET}"
+        fi
     fi
 fi
 
@@ -3434,6 +3498,7 @@ layout_spec="$LAYOUT_EXPANDED"
 
 out_lines=()
 [ -n "$config_warning_line" ] && out_lines+=("$config_warning_line")
+[ -n "$config_value_warning_line" ] && out_lines+=("$config_value_warning_line")
 [ -n "$subscription_warning_line" ] && out_lines+=("$subscription_warning_line")
 [ -n "$balance_warning_line" ] && out_lines+=("$balance_warning_line")
 

@@ -54,3 +54,32 @@ install_script() { # $1 = config folder
     [ "$status" -eq 0 ]
     [ "$(jq -r '.statusLine.refreshInterval' "$HOME/.claude/settings.json" | tr -d '\r')" = "5" ]
 }
+
+@test "--report masks text, keeps numbers and the model, and changes nothing" {
+    export XDG_CACHE_HOME="$BATS_TEST_TMPDIR/cache"
+    cp "$REPO_ROOT/doctor.sh" "$HOME/.claude/super-status/doctor.sh"
+    echo '{"external_usage_path":"/Users/me/usage.json","preset":"full"}' > "$HOME/.claude/super-status/config.json"
+    printf '%s' '{"model":{"display_name":"Opus 5"},"version":"2.3.1","session_name":"fix payroll","cwd":"/Users/me/Secret Project","context_window":{"used_percentage":42}}' \
+        | bash "$HOME/.claude/super-status/statusline.sh" > /dev/null
+    before=$(cat "$XDG_CACHE_HOME/super-status/last-payload.json")
+    run bash "$HOME/.claude/super-status/doctor.sh" --report --width 80
+    [ "$status" -eq 0 ]
+    [[ "$output" == *'"display_name": "Opus 5"'* ]] || false
+    [[ "$output" == *'"version": "2.3.1"'* ]] || false
+    [[ "$output" == *'"used_percentage": 42'* ]] || false
+    [[ "$output" == *'"session_name": "xxx xxxxxxx"'* ]] || false
+    [[ "$output" == *'"cwd": "/xxxxx/xx/xxxxxx xxxxxxx"'* ]] || false
+    [[ "$output" == *'"external_usage_path": "/xxxxx/xx/xxxxxxxxxx"'* ]] || false
+    [[ "$output" != *"Secret"* ]] || false
+    [[ "$output" != *"payroll"* ]] || false
+    [[ "$output" == *"Ctx"*"42%"* ]] || false
+    [ ! -f "$HOME/.claude/settings.json" ]
+    [ "$(cat "$XDG_CACHE_HOME/super-status/last-payload.json")" = "$before" ]
+}
+
+@test "--report with no recorded render says how to get one" {
+    export XDG_CACHE_HOME="$BATS_TEST_TMPDIR/empty-cache"
+    run bash "$REPO_ROOT/doctor.sh" --report
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"No render recorded yet"* ]] || false
+}

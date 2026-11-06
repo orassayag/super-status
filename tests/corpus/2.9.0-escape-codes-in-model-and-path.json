@@ -1,0 +1,17 @@
+{
+  "why": "Escape codes inside the model name or project path reached the terminal.",
+  "payload": {
+    "model": {
+      "display_name": "Op\u001b[5mus"
+    },
+    "workspace": {
+      "project_dir": "/a/pa\u001b]0;pwned\u0007rent"
+    }
+  },
+  "expect": {
+    "contains": [
+      "Opus",
+      "parent"
+    ]
+  }
+}

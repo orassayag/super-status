@@ -1,0 +1,50 @@
+{
+  "why": "A transcript file name carrying escape codes recoloured and blinked the Activity line.",
+  "config": {
+    "display": {
+      "activity": true
+    }
+  },
+  "transcript": [
+    {
+      "type": "user",
+      "timestamp": "2026-09-20T11:00:10Z",
+      "message": {
+        "role": "user",
+        "content": "go"
+      }
+    },
+    {
+      "type": "assistant",
+      "timestamp": "2026-09-20T11:00:20Z",
+      "message": {
+        "role": "assistant",
+        "model": "claude-opus-5",
+        "content": [
+          {
+            "type": "tool_use",
+            "id": "t1",
+            "name": "Read",
+            "input": {
+              "file_path": "/tmp/ev\u001b[31mIL\u001b[5m.ts\u001b]0;pwned\u0007"
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "payload": {
+    "model": {
+      "display_name": "Opus"
+    },
+    "session_id": "corpus-activity",
+    "workspace": {
+      "project_dir": "/a/b"
+    }
+  },
+  "expect": {
+    "contains": [
+      "evIL.ts"
+    ]
+  }
+}

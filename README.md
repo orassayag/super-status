@@ -170,7 +170,9 @@ Create `~/.claude/super-status/config.json`. The quickest start:
 { "preset": "full" }
 ```
 
-A malformed config never breaks the render — defaults are used and a one-line bold red warning appears until it's fixed. Unknown keys are ignored.
+A malformed config never breaks the render — defaults are used and a one-line bold red warning appears until it's fixed. A valid file with a value the script can't use (`"layout": "compakt"`, `"bar_width": 100`, `"colors": {"model": "purpel"}`) keeps that key's default and gets one warning line naming the first such key, plus how many more. Unknown keys are ignored.
+
+With the plugin installed, `/super-status:configure` walks through the common toggles, shows the statusline those choices actually render before saving, and keeps the previous file as `config.undo.json` — `/super-status:configure undo` puts it back.
 
 ### Full reference (every key, with its default)
 
@@ -575,7 +577,7 @@ General reliability note: Claude Code is built and tested against Anthropic's fi
 
 ## Caches
 
-Everything super-status derives (LOC counts, transcript parses, git and jj status, the OpenRouter credits response, the Anthropic cost-report spend total, and the per-day ledger behind `Today`) is cached under `${XDG_CACHE_HOME:-$HOME/.cache}/super-status/`, created with `0700` permissions — private to your user, unlike the world-readable `/tmp` location used before v2.0.0. It's always safe to delete the whole directory; everything in it is re-derived on the next render — with one caveat worth knowing: deleting `daily-cost/` resets `Today` to zero for the rest of the day, because each session's baseline is re-recorded at its current cost. The day ledger prunes itself, dropping session rows unseen for more than a day on every write and sweeping day files older than eight days (long enough for `Week`) on the first render of a new day. `doctor.sh` removes a legacy `/tmp/super-status` directory if it finds one.
+Everything super-status derives (LOC counts, transcript parses, git and jj status, the OpenRouter credits response, the Anthropic cost-report spend total, the per-day ledger behind `Today`, and `last-payload.json`, the latest render's raw input, kept for bug reports) is cached under `${XDG_CACHE_HOME:-$HOME/.cache}/super-status/`, created with `0700` permissions — private to your user, unlike the world-readable `/tmp` location used before v2.0.0. It's always safe to delete the whole directory; everything in it is re-derived on the next render — with one caveat worth knowing: deleting `daily-cost/` resets `Today` to zero for the rest of the day, because each session's baseline is re-recorded at its current cost. The day ledger prunes itself, dropping session rows unseen for more than a day on every write and sweeping day files older than eight days (long enough for `Week`) on the first render of a new day. `doctor.sh` removes a legacy `/tmp/super-status` directory if it finds one.
 
 ## Troubleshooting
 
@@ -602,6 +604,12 @@ It traces where each value came from — whether the rate-limit windows came fro
 **`Orca:` / `Master:` shows nothing even though a wave is running** — it reads `.claude/status.md` / `docs/status/stage-plan.md` from the git root of `cwd`/`project_dir`, so it needs to be run from (or under) the same directory `/orca`/`/master` was run in. It's also possible every row/stage happens to be in a terminal state (`REBASED & MERGED` / `COMMITTED`) at the moment of that particular render — the line only shows while something is still active.
 
 **A bold red `SUPER-STATUS CONFIG IS INVALID JSON` line appears** — your `~/.claude/super-status/config.json` isn't parseable (or is larger than 256 KB); the statusline is running on defaults until you fix or delete it. `bash ~/.claude/super-status/doctor.sh` confirms which.
+
+**A bold red `SUPER-STATUS CONFIG VALUE IGNORED: "<key>"` line appears** — config.json parses, but that key's value is outside what it accepts (an unknown word, a number out of range, an unknown colour); the key keeps its default. Nested keys are named as written, e.g. `"git.timeout_seconds"`. Check the key against **Full reference** above, or re-run `/super-status:configure`.
+
+**The statusline says `super-status: jq is not installed`** — every value comes through `jq`, so without it the script prints that one line instead of a render full of wrong zeros. Install it (`brew install jq` / `sudo apt-get install -y jq`); the next render picks it up.
+
+**Reporting a bug** — every render keeps its input as `last-payload.json` in the cache folder. `/super-status:report` (or `bash ~/.claude/super-status/doctor.sh --report` outside Claude Code) turns it into a Markdown report: environment, config with paths masked, that input with every string masked to same-length `x` (path separators, spaces, numbers, timestamps, the model and the Claude Code version kept, so layout bugs still reproduce), and the statusline rendered from the masked input. Read it before sending — the mask covers strings, not every value you might consider private. The command files a GitHub issue only after you say so.
 
 **I want it gone for one session** — launch with `SUPER_STATUS_DISABLE=1` in the environment; the script exits silently without touching your config.
 
@@ -633,6 +641,8 @@ shellcheck statusline.sh doctor.sh install.sh
 ```
 
 Both run in CI on macOS and Ubuntu (the script carries BSD/GNU dual paths for `date` and `stat`, so both platforms matter), plus a **non-blocking** `windows-latest` job that runs the suite under Git Bash — the README promises that platform, so something has to exercise it. It is non-blocking on purpose: a Windows runner is expected to surface real differences, and a permanently red required check is friction rather than information.
+
+`tests/corpus/` holds past bugs as data: one JSON file per case (payload, config, width, what must appear). `tests/corpus.bats` renders every case and also holds each one to the rules that must always hold — exit 0, nothing on standard error, no line past the width, every OSC 8 link closed, no stray escape bytes, no `null`/`NaN`. A new bug becomes a test by adding one file.
 
 `tests/readme-options.bats` fails when the config keys `statusline.sh` reads and the keys this README's reference block documents disagree in **either** direction, so a key cannot ship undocumented and a row cannot outlive its key. When it fails, the fix is usually a README row.
 

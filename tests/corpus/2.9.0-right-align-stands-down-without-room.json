@@ -1,0 +1,31 @@
+{
+  "why": "right_align padded a line past the edge when there was no room, wrapping it.",
+  "config": {
+    "lines": [
+      [
+        "model",
+        "context"
+      ]
+    ],
+    "right_align": [
+      "context"
+    ],
+    "max_width": 24
+  },
+  "payload": {
+    "model": {
+      "display_name": "Opus"
+    },
+    "workspace": {
+      "project_dir": "/a/b"
+    },
+    "context_window": {
+      "used_percentage": 40
+    }
+  },
+  "expect": {
+    "raw_absent": [
+      "\u0001"
+    ]
+  }
+}

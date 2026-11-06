@@ -1,0 +1,25 @@
+{
+  "why": "A long session name was cut through the middle of a flag emoji.",
+  "config": {
+    "display": {
+      "session_name": true
+    }
+  },
+  "payload": {
+    "model": {
+      "display_name": "Opus"
+    },
+    "session_name": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa🇮🇱 tail",
+    "workspace": {
+      "project_dir": "/a/proj"
+    }
+  },
+  "expect": {
+    "contains": [
+      "“aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa…”"
+    ],
+    "absent": [
+      "🇮"
+    ]
+  }
+}

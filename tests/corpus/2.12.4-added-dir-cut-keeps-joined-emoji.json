@@ -1,0 +1,29 @@
+{
+  "why": "An added folder name was cut inside a zero-width-joined family emoji.",
+  "config": {
+    "display": {
+      "added_dirs": true
+    },
+    "added_dirs_layout": "line",
+    "added_dirs_name_width": 5
+  },
+  "payload": {
+    "model": {
+      "display_name": "Opus"
+    },
+    "workspace": {
+      "project_dir": "/a/proj",
+      "added_dirs": [
+        "/x/abc👨‍👩‍👧z"
+      ]
+    }
+  },
+  "expect": {
+    "contains": [
+      "Added dirs: abc…"
+    ],
+    "absent": [
+      "‍"
+    ]
+  }
+}

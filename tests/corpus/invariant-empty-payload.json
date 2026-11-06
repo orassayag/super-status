@@ -1,0 +1,5 @@
+{
+  "why": "An empty object is a legal payload; nothing may print null or crash.",
+  "payload": {},
+  "expect": {}
+}

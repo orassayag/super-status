@@ -1,0 +1,23 @@
+{
+  "why": "A line longer than the terminal must be cut with an ellipsis, never wrapped.",
+  "config": {
+    "display": {
+      "session_name": true
+    }
+  },
+  "width": 30,
+  "payload": {
+    "model": {
+      "display_name": "Opus"
+    },
+    "session_name": "a session name long enough to overflow",
+    "workspace": {
+      "project_dir": "/a/project-folder"
+    }
+  },
+  "expect": {
+    "contains": [
+      "…"
+    ]
+  }
+}

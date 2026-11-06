@@ -1,0 +1,18 @@
+{
+  "why": "A malformed config.json must fall back to defaults with one warning line.",
+  "config_raw": "{ \"preset\": ",
+  "payload": {
+    "model": {
+      "display_name": "Opus"
+    },
+    "workspace": {
+      "project_dir": "/a/b"
+    }
+  },
+  "expect": {
+    "contains": [
+      "CONFIG IS INVALID JSON",
+      "Opus"
+    ]
+  }
+}

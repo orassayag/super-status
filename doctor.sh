@@ -17,6 +17,89 @@ if [ ! -f "$SCRIPT_PATH" ]; then
     exit 1
 fi
 
+# --report [--width N]: a Markdown bug report built from the last real render,
+# read-only. Text is masked to same-length x (path separators and spaces kept,
+# so path-depth and width bugs still reproduce); numbers, timestamps, the model
+# and the Claude Code version stay readable.
+if [ "${1:-}" = "--report" ]; then
+    report_width=""
+    [ "${2:-}" = "--width" ] && report_width="${3:-}"
+    last_payload="$CACHE_ROOT/last-payload.json"
+    if ! command -v jq >/dev/null 2>&1; then
+        echo "✗ jq is required but isn't installed."
+        exit 1
+    fi
+    if [ ! -s "$last_payload" ]; then
+        echo "✗ No render recorded yet ($last_payload). Let the statusline draw once in a Claude Code session, then retry."
+        exit 1
+    fi
+    mask_defs='
+        def walk_strings(f): if type == "object" then map_values(walk_strings(f))
+            elif type == "array" then map(walk_strings(f))
+            elif type == "string" then f else . end;
+        def mask: if test("^[0-9][0-9:./TZ+ -]*$") then . else gsub("[^/\\\\ ]"; "x") end;'
+    if ! masked_payload=$(jq "$mask_defs"'
+            . as $in | walk_strings(mask)
+            | if type == "object" then
+                (if $in.model != null then .model = $in.model else . end)
+                | (if $in.version != null then .version = $in.version else . end)
+              else . end' "$last_payload" 2>/dev/null); then
+        echo "✗ The last recorded input is not valid JSON, so it cannot be masked safely and is left out."
+        echo "  That is itself the bug: report that Claude Code sent a statusline payload jq could not parse."
+        exit 1
+    fi
+    masked_config="(none — defaults)"
+    if [ -f "$CONFIG_FILE" ]; then
+        masked_config=$(jq "$mask_defs"'
+            def scrub: if type == "object" then with_entries(
+                    if (.value | type) == "string" and ((.key | endswith("_path")) or (.value | test("^[/~]")))
+                    then .value |= mask else .value |= scrub end)
+                elif type == "array" then map(scrub) else . end;
+            scrub' "$CONFIG_FILE" 2>/dev/null) || masked_config="(config.json is not valid JSON)"
+    fi
+    esc=$(printf '\033')
+    report_cache=$(mktemp -d)
+    # A throwaway cache, so the masked session never lands in the real day
+    # ledger or session-diff state, nor overwrites last-payload.json itself.
+    rendered=$(printf '%s' "$masked_payload" \
+        | env XDG_CACHE_HOME="$report_cache" ${report_width:+COLUMNS="$report_width"} /bin/bash "$SCRIPT_PATH" 2>/dev/null \
+        | sed -e "s/${esc}\[[0-9;]*m//g" -e "s/${esc}]8;;[^${esc}]*${esc}\\\\//g") || true
+    rm -rf "$report_cache"
+    tool_version() { "$@" 2>/dev/null | head -n 1 | tr -d '\r' || true; }
+    cat <<REPORT
+## super-status bug report
+
+### Environment
+
+- OS: $(uname -sr 2>/dev/null) (${OSTYPE:-unknown})
+- bash running the statusline: $(/bin/bash -c 'echo "$BASH_VERSION"' 2>/dev/null)
+- jq: $(tool_version jq --version)
+- git: $(tool_version git --version)
+- python3: $(tool_version python3 --version)
+- statusline.sh checksum: $(cksum < "$SCRIPT_PATH" | awk '{print $1}')
+- render width: ${report_width:-${COLUMNS:-unset}}
+
+### Config (paths masked)
+
+\`\`\`json
+$masked_config
+\`\`\`
+
+### Last input (text masked, numbers kept)
+
+\`\`\`json
+$masked_payload
+\`\`\`
+
+### Rendered from the masked input
+
+\`\`\`
+$rendered
+\`\`\`
+REPORT
+    exit 0
+fi
+
 if [ ! -x "$SCRIPT_PATH" ]; then
     chmod +x "$SCRIPT_PATH"
     echo "✓ Restored the missing executable bit on statusline.sh."

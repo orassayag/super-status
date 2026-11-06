@@ -1,0 +1,55 @@
+{
+  "why": "Every OSC 8 link opened on the Activity line must be closed on the same line.",
+  "config": {
+    "display": {
+      "activity": true
+    },
+    "hyperlinks": true
+  },
+  "width": 200,
+  "transcript": [
+    {
+      "type": "user",
+      "timestamp": "2026-09-20T11:00:10Z",
+      "message": {
+        "role": "user",
+        "content": "go"
+      }
+    },
+    {
+      "type": "assistant",
+      "timestamp": "2026-09-20T11:00:20Z",
+      "message": {
+        "role": "assistant",
+        "model": "claude-opus-5",
+        "content": [
+          {
+            "type": "tool_use",
+            "id": "t1",
+            "name": "Read",
+            "input": {
+              "file_path": "/tmp/a b/café.ts"
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "payload": {
+    "model": {
+      "display_name": "Opus"
+    },
+    "session_id": "corpus-links",
+    "workspace": {
+      "project_dir": "/a/b"
+    }
+  },
+  "expect": {
+    "contains": [
+      "café.ts"
+    ],
+    "raw_contains": [
+      "file:///tmp/a%20b/caf%C3%A9.ts"
+    ]
+  }
+}
