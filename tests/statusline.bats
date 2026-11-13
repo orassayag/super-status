@@ -879,6 +879,34 @@ write_oauth_account() { # $1 billingType, $2 seatTier (JSON literal)
     [[ "$(strip_ansi "$output")" == *"◆ Opus"* ]]
 }
 
+# --- e2e: account email segment ---------------------------------------------
+
+@test "the account email stays hidden unless display.account is on" {
+    printf '{"oauthAccount":{"billingType":"subscription","seatTier":null,"emailAddress":"me@example.com"}}' > "$HOME/.claude.json"
+    run_statusline "$MINIMAL_PAYLOAD"
+    [[ "$(strip_ansi "$output")" != *"me@example.com"* ]]
+    echo '{"preset": "full"}' > "$HOME/.claude/super-status/config.json"
+    run_statusline "$MINIMAL_PAYLOAD"
+    [[ "$(strip_ansi "$output")" != *"me@example.com"* ]]
+}
+
+@test "display.account shows the email after the badge, with an empty seat tier intact" {
+    printf '{"oauthAccount":{"billingType":"subscription","seatTier":null,"emailAddress":"me@example.com"}}' > "$HOME/.claude.json"
+    echo '{"display": {"account": true}}' > "$HOME/.claude/super-status/config.json"
+    run_statusline "$MINIMAL_PAYLOAD"
+    [[ "$(strip_ansi "$output")" == *"Sub | me@example.com | ◆ Opus"* ]]
+}
+
+@test "account_max_length cuts the email, and 0 shows it whole" {
+    printf '{"oauthAccount":{"billingType":"prepaid","emailAddress":"someone.long@example.com"}}' > "$HOME/.claude.json"
+    echo '{"display": {"account": true}, "account_max_length": 7}' > "$HOME/.claude/super-status/config.json"
+    run_statusline "$MINIMAL_PAYLOAD"
+    [[ "$(strip_ansi "$output")" == *"API | someone… | ◆ Opus"* ]]
+    echo '{"display": {"account": true}, "account_max_length": 0}' > "$HOME/.claude/super-status/config.json"
+    run_statusline "$MINIMAL_PAYLOAD"
+    [[ "$(strip_ansi "$output")" == *"API | someone.long@example.com | ◆ Opus"* ]]
+}
+
 @test "plan_label overrides the detected mode" {
     write_oauth_account '"prepaid"' 'null'
     echo '{"plan_label":"Max"}' > "$HOME/.claude/super-status/config.json"

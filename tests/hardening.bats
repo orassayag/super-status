@@ -527,6 +527,32 @@ PY
     [[ "$plain" != *'Today'* ]]
 }
 
+@test "week_start counts from the latest named weekday with no subscription" {
+    today_name=$(LC_ALL=C date +%A | tr '[:upper:]' '[:lower:]')
+    write_config "{\"display\":{\"week\":true},\"week_start\":\"$today_name\"}"
+    ledger_dir="$XDG_CACHE_HOME/super-status/daily-cost"
+    mkdir -p "$ledger_dir"
+    now=$(date +%s)
+    yesterday=$(date -v-1d +%Y-%m-%d 2>/dev/null || date -d '-1 days' +%Y-%m-%d)
+    printf 'prior\t0\t9\t%s\n' "$now" > "$ledger_dir/$yesterday.tsv"
+    run_statusline '{"model":{"display_name":"Opus"},"session_id":"wks","workspace":{"project_dir":"/a/b"},"cost":{"total_cost_usd":2}}'
+    plain=$(strip_ansi "$output")
+    [[ "$plain" == *'Week $0.00'* ]]
+
+    tomorrow_name=$(LC_ALL=C date -v+1d +%A 2>/dev/null || LC_ALL=C date -d '+1 days' +%A)
+    tomorrow_name=$(tr '[:upper:]' '[:lower:]' <<< "$tomorrow_name")
+    write_config "{\"display\":{\"week\":true},\"week_start\":\"$tomorrow_name\"}"
+    run_statusline '{"model":{"display_name":"Opus"},"session_id":"wks","workspace":{"project_dir":"/a/b"},"cost":{"total_cost_usd":3}}'
+    plain=$(strip_ansi "$output")
+    [[ "$plain" == *'Week $10.00'* ]]
+}
+
+@test "an unknown week_start value is rejected with a warning" {
+    write_config '{"display":{"week":true},"week_start":"someday"}'
+    run_statusline '{"model":{"display_name":"Opus"},"workspace":{"project_dir":"/a/b"}}'
+    [[ "$(strip_ansi "$output")" == *'CONFIG VALUE IGNORED: "week_start"'* ]]
+}
+
 # --- session name -----------------------------------------------------------
 
 @test "session_name renders sanitized when enabled and not otherwise" {

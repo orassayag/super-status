@@ -99,6 +99,14 @@ cfg_plan_label=""
 # (not trimmed-to-valid) so a malformed value reports INVALID instead of silently
 # falling through to the CLAUDE.md lookup.
 cfg_subscription_start_date=""
+# Where the Week spend total starts counting: "quota" follows the subscription's
+# 7-day window (so it needs one), a weekday name starts at that day's local
+# midnight and works on any billing. Stored as ISO weekday 1-7, empty = quota.
+cfg_week_start_dow=""
+# The signed-in account's email beside the mode badge. A cap of 0 = the whole
+# address. Never switched on by a preset: an email on screen leaks into every
+# screenshot and screen share.
+cfg_account_max_length=20
 # Prepaid API credit bar. Anthropic publishes no credit-balance endpoint (the
 # Console's "Credit balance" card is not in the public API), so the balance is a
 # user-declared snapshot and everything spent since it comes from the Admin API
@@ -135,6 +143,7 @@ cfg_right_align=""
 
 cfg_show_model=1
 cfg_show_mode=1
+cfg_show_account=0
 cfg_show_repo=1
 cfg_show_branch=1
 # Working directory relative to the git root (or ~-abbreviated outside a repo).
@@ -198,8 +207,8 @@ cfg_color_bar_empty=""
 # Layout presets: lines separated by "|", segments within a line by ",".
 # A custom "lines" array in config.json overrides either preset, which is how
 # element reordering and merging elements onto shared lines is expressed.
-LAYOUT_EXPANDED="mode,model,agent,repo,branch,cwd,worktree,lines_changed,version,session_name|added_dirs|sessions,balance,subscription|context,cache_ratio,prompt_cache,cost,today,week,total_tokens|loc,session_time,thinking_time,speed,efficiency,tool_calls,compactions|activity|agents|todos|orchestrator"
-LAYOUT_COMPACT="mode,model,agent,repo,branch,cwd,worktree,added_dirs,context|sessions,balance,cost,today,week,subscription|activity,agents,todos,orchestrator"
+LAYOUT_EXPANDED="mode,account,model,agent,repo,branch,cwd,worktree,lines_changed,version,session_name|added_dirs|sessions,balance,subscription|context,cache_ratio,prompt_cache,cost,today,week,total_tokens|loc,session_time,thinking_time,speed,efficiency,tool_calls,compactions|activity|agents|todos|orchestrator"
+LAYOUT_COMPACT="mode,account,model,agent,repo,branch,cwd,worktree,added_dirs,context|sessions,balance,cost,today,week,subscription|activity,agents,todos,orchestrator"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -1117,7 +1126,7 @@ apply_preset() {
             ;;
         minimal)
             for _v in repo cwd worktree lines_changed version git_dirty git_ahead_behind \
-                      git_file_stats provider mode subscription cost total_tokens loc \
+                      git_file_stats provider mode account subscription cost total_tokens loc \
                       session_time thinking_time cache_ratio efficiency tool_calls \
                       activity agents agent_effort todos orchestrator added_dirs prompt_cache \
                       today week session_name usage_pace compactions speed; do
@@ -1167,6 +1176,8 @@ if [ -f "$CONFIG_FILE" ]; then
             ["model_source", s(.model_source)],
             ["plan_label", s(.plan_label)],
             ["subscription_start_date", s(.subscription_start_date)],
+            ["week_start", s(.week_start)],
+            ["account_max_length", s(.account_max_length)],
             ["api_credit_balance", s(.api_credit_balance)],
             ["api_credit_as_of", s(.api_credit_as_of)],
             ["api_spend_cache_seconds", s(.api_spend_cache_seconds)],
@@ -1210,6 +1221,20 @@ if [ -f "$CONFIG_FILE" ]; then
                 model_source) case "$_v" in stdin|transcript|auto) cfg_model_source="$_v" ;; *) config_reject "$_k" ;; esac ;;
                 plan_label) [ -n "$_v" ] && cfg_plan_label=$(trim_ws "$_v") ;;
                 subscription_start_date) [ -n "$_v" ] && cfg_subscription_start_date=$(trim_ws "$_v") ;;
+                week_start)
+                    case "$_v" in
+                        quota) cfg_week_start_dow="" ;;
+                        monday) cfg_week_start_dow=1 ;;
+                        tuesday) cfg_week_start_dow=2 ;;
+                        wednesday) cfg_week_start_dow=3 ;;
+                        thursday) cfg_week_start_dow=4 ;;
+                        friday) cfg_week_start_dow=5 ;;
+                        saturday) cfg_week_start_dow=6 ;;
+                        sunday) cfg_week_start_dow=7 ;;
+                        *) config_reject "$_k" ;;
+                    esac
+                    ;;
+                account_max_length) if is_num "$_v" && [ "${_v%.*}" -ge 0 ] && [ "${_v%.*}" -le 200 ]; then cfg_account_max_length="${_v%.*}"; else config_reject "$_k"; fi ;;
                 api_credit_balance) if is_num "$_v"; then cfg_api_credit_balance="$_v"; else config_reject "$_k"; fi ;;
                 api_credit_as_of) [ -n "$_v" ] && cfg_api_credit_as_of=$(trim_ws "$_v") ;;
                 api_spend_cache_seconds) if is_num "$_v" && [ "${_v%.*}" -ge 60 ]; then cfg_api_spend_cache_seconds="${_v%.*}"; else config_reject "$_k"; fi ;;
@@ -1244,7 +1269,7 @@ if [ -f "$CONFIG_FILE" ]; then
                 display_*)
                     _b=$(to_bool "$_v") || { config_reject "$_k"; continue; }
                     case "${_k#display_}" in
-                        model|mode|repo|branch|cwd|worktree|lines_changed|version|git_dirty|git_ahead_behind|git_file_stats|provider|effort|subscription|sessions|balance|context|cost|total_tokens|loc|session_time|thinking_time|cache_ratio|efficiency|tool_calls|activity|agents|agent_effort|todos|orchestrator|added_dirs|prompt_cache|today|week|session_name|usage_pace|compactions|speed)
+                        model|mode|account|repo|branch|cwd|worktree|lines_changed|version|git_dirty|git_ahead_behind|git_file_stats|provider|effort|subscription|sessions|balance|context|cost|total_tokens|loc|session_time|thinking_time|cache_ratio|efficiency|tool_calls|activity|agents|agent_effort|todos|orchestrator|added_dirs|prompt_cache|today|week|session_name|usage_pace|compactions|speed)
                             printf -v "cfg_show_${_k#display_}" '%s' "$_b" ;;
                     esac
                     ;;
@@ -1718,6 +1743,7 @@ is_num "$five_util_probe" && is_num "$seven_util_probe" && IS_SUBSCRIPTION=1
 # ---------------------------------------------------------------------------
 ACCOUNT_MODE=""
 ACCOUNT_MODE_KIND=""
+ACCOUNT_EMAIL=""
 
 resolve_account_mode() {
     local _billing="" _seat="" _claude_json="$HOME/.claude.json"
@@ -1725,9 +1751,11 @@ resolve_account_mode() {
     [ -n "$CLAUDE_CONFIG_DIR" ] && [ -f "$CLAUDE_CONFIG_DIR/.claude.json" ] && \
         _claude_json="$CLAUDE_CONFIG_DIR/.claude.json"
     if [ -f "$_claude_json" ]; then
-        IFS=$'\t' read -r _billing _seat <<< "$(jq -r '
-            def s(v): if v == null then "" else (v | tostring) end;
-            [s(.oauthAccount.billingType), s(.oauthAccount.seatTier)] | @tsv' \
+        # Unit separator, not tab: tab is IFS whitespace, so an empty seatTier
+        # would collapse and shift the email into _seat.
+        IFS=$'\x1f' read -r _billing _seat ACCOUNT_EMAIL <<< "$(jq -r '
+            def s(v): if v == null then "" else (v | tostring | gsub("[\u001f\n]"; " ")) end;
+            [s(.oauthAccount.billingType), s(.oauthAccount.seatTier), s(.oauthAccount.emailAddress)] | join("\u001f")' \
             "$_claude_json" 2>/dev/null)"
     fi
     case "$_billing" in
@@ -2786,6 +2814,13 @@ fi
 seg_mode=""
 [ -n "$mode_badge" ] && seg_mode="${C_ACCENT}${mode_badge}${RESET}"
 
+seg_account=""
+if [ "$cfg_show_account" = "1" ] && [ "$IS_ANTIGRAVITY" -eq 0 ] && [ -n "$ACCOUNT_EMAIL" ]; then
+    _acct=$(sanitize_text "$ACCOUNT_EMAIL")
+    [ "$cfg_account_max_length" -gt 0 ] && cut_label _acct "$cfg_account_max_length"
+    [ -n "$_acct" ] && seg_account=$(muted "$_acct")
+fi
+
 seg_model=""
 if [ "$cfg_show_model" = "1" ] && [ -n "$model" ]; then
     seg_model="${C_MODEL}${L_MODEL}${RESET} ${C_MODEL}${model}${RESET}"
@@ -3185,8 +3220,8 @@ fi
 # from that point, and a session that crosses midnight is split across the two
 # days by getting a fresh baseline in the new day's file. Rows unseen for more
 # than a day are dropped on every write, so the file cannot grow without limit.
-# Week sums the day files from the local day the weekly window opened, so day
-# files are kept for eight days.
+# Week sums the day files from the local day the weekly window opened (or from
+# the latest week_start weekday), so day files are kept for eight days.
 seg_today=""; seg_week=""
 if { [ "$cfg_show_today" = "1" ] || [ "$cfg_show_week" = "1" ]; } && is_num "$cost_usd"; then
     _dc_dir="$CACHE_ROOT/daily-cost"
@@ -3239,15 +3274,23 @@ if { [ "$cfg_show_today" = "1" ] || [ "$cfg_show_week" = "1" ]; } && is_num "$co
     if [ "$cfg_show_today" = "1" ] && is_num "$_dc_total"; then
         seg_today="$(muted "$L_TODAY") ${C_ACCENT}\$${_dc_total}${RESET}"
     fi
-    if [ "$cfg_show_week" = "1" ] && is_num "${seven_reset%.*}"; then
+    _wk_start=""
+    if [ "$cfg_show_week" = "1" ] && [ -n "$cfg_week_start_dow" ]; then
+        _wk_back=$(( ( $(date +%u) - cfg_week_start_dow + 7 ) % 7 ))
+        # Calendar arithmetic rather than epoch minus N*86400, which lands on the
+        # wrong day when a DST change falls inside the span near midnight.
+        _wk_start=$(date -d "-${_wk_back} days" +%Y-%m-%d 2>/dev/null || date -v-"${_wk_back}"d +%Y-%m-%d 2>/dev/null)
+    elif [ "$cfg_show_week" = "1" ] && is_num "${seven_reset%.*}"; then
         _wk_open=$(( ${seven_reset%.*} - 604800 ))
         _wk_start=$(date -d "@${_wk_open}" +%Y-%m-%d 2>/dev/null || date -r "$_wk_open" +%Y-%m-%d 2>/dev/null)
+    fi
+    if [ -n "$_wk_start" ]; then
         _wk_files=()
         while IFS= read -r _wk_file; do
             _wk_day="${_wk_file##*/}"
             [[ "${_wk_day%.tsv}" < "$_wk_start" ]] || _wk_files+=("$_wk_file")
         done < <(find "$_dc_dir" -name '*.tsv' -type f 2>/dev/null)
-        if [ -n "$_wk_start" ] && [ "${#_wk_files[@]}" -gt 0 ]; then
+        if [ "${#_wk_files[@]}" -gt 0 ]; then
             _wk_total=$(awk -F'\t' 'NF >= 4 { total += $3 - $2 } END { printf "%.2f", total }' \
                             "${_wk_files[@]}" 2>/dev/null)
             is_num "$_wk_total" && seg_week="$(muted "$L_WEEK") ${C_ACCENT}\$${_wk_total}${RESET}"
@@ -3463,6 +3506,7 @@ fi
 segment_value() {
     case "$1" in
         mode) printf '%s' "$seg_mode" ;;
+        account) printf '%s' "$seg_account" ;;
         model) printf '%s' "$seg_model" ;;
         repo) printf '%s' "$seg_repo" ;;
         branch) printf '%s' "$seg_branch" ;;
